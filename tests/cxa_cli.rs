@@ -770,11 +770,11 @@ done
     let account_one_output = &stdout[..account_two];
     let account_two_output = &stdout[account_two..];
     assert!(account_one_output.contains("one@example.com  Pro 20x · updated just now"));
-    assert!(account_one_output.contains("11% used"));
-    assert!(!account_one_output.contains("77% used"));
-    assert!(account_two_output.contains("77% used"));
+    assert!(account_one_output.contains("89% left"));
+    assert!(!account_one_output.contains("23% left"));
+    assert!(account_two_output.contains("23% left"));
     assert!(account_two_output.contains("Codex Spark  EXHAUSTED"));
-    assert!(account_two_output.contains("[████████████████] 100% used"));
+    assert!(account_two_output.contains("[░░░░░░░░░░░░░░░░]   0% left"));
     assert!(!stdout.contains("codex primary"));
     assert!(stdout.lines().all(|line| line.chars().count() <= 80));
     assert!(!String::from_utf8_lossy(&output.stderr).contains("Fetching usage"));

@@ -103,17 +103,17 @@ new account.
 $ cxa list
 * 1  personal@example.com  Pro 20x · updated just now
     Codex
-      Weekly   [███░░░░░░░░░░░░░]  18% used  resets in 6d 11h
+      Weekly   [█████████████░░░]  82% left  resets in 6d 11h
     Codex Spark
-      5-hour   [███████░░░░░░░░░]  41% used  resets in 4h 12m
-      Weekly   [█░░░░░░░░░░░░░░░]   9% used  resets in 6d 23h
+      5-hour   [█████████░░░░░░░]  59% left  resets in 4h 12m
+      Weekly   [███████████████░]  91% left  resets in 6d 23h
 
   2  work@example.com  Pro 20x · updated just now
     Codex
-      Weekly   [██████████░░░░░░]  63% used  resets in 3d 8h
+      Weekly   [██████░░░░░░░░░░]  37% left  resets in 3d 8h
     Codex Spark
-      5-hour   [░░░░░░░░░░░░░░░░]   0% used  resets in 4h 48m
-      Weekly   [██░░░░░░░░░░░░░░]  12% used  resets in 5d 17h
+      5-hour   [████████████████] 100% left  resets in 4h 48m
+      Weekly   [██████████████░░]  88% left  resets in 5d 17h
 
 $ cxa 2
 ✓ Account 2 (work@example.com) is now selected.

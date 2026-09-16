@@ -370,9 +370,10 @@ fn write_bucket(output: &mut String, bucket: &UsageBucket, now: i64) {
 
 fn write_window(output: &mut String, fallback: &str, window: &UsageWindow, now: i64) {
     let label = window_label(fallback, window.window_minutes);
-    let percent = window.used_percent.map(format_percent);
-    let bar = progress_bar(window.used_percent);
-    let style = usage_style(window.used_percent);
+    let remaining = window.remaining_percent();
+    let percent = remaining.map(format_percent);
+    let bar = progress_bar(remaining);
+    let style = usage_style(remaining);
     let percent = percent.unwrap_or_else(|| "--".into());
     let reset = window
         .resets_at
@@ -380,7 +381,7 @@ fn write_window(output: &mut String, fallback: &str, window: &UsageWindow, now: 
         .unwrap_or_default();
     writeln!(
         output,
-        "      {MUTED}{label:<8}{MUTED:#} {style}{bar}{style:#} {style}{percent:>3}% used{style:#}{MUTED}{reset}{MUTED:#}"
+        "      {MUTED}{label:<8}{MUTED:#} {style}{bar}{style:#} {style}{percent:>3}% left{style:#}{MUTED}{reset}{MUTED:#}"
     )
     .unwrap();
 }
@@ -445,8 +446,8 @@ fn progress_bar(percent: Option<f64>) -> String {
 
 fn usage_style(percent: Option<f64>) -> Style {
     match percent {
-        Some(percent) if percent >= 100.0 => ERROR,
-        Some(percent) if percent >= 80.0 => WARNING,
+        Some(percent) if percent <= 0.0 => ERROR,
+        Some(percent) if percent <= 20.0 => WARNING,
         Some(_) => SUCCESS,
         None => MUTED,
     }
@@ -515,7 +516,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn progress_bar_clamps_and_fills_to_percentage() {
+    fn progress_bar_clamps_and_fills_to_remaining_percentage() {
         assert_eq!(progress_bar(Some(0.0)), "[░░░░░░░░░░░░░░░░]");
         assert_eq!(progress_bar(Some(43.0)), "[███████░░░░░░░░░]");
         assert_eq!(progress_bar(Some(100.0)), "[████████████████]");

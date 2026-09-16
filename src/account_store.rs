@@ -24,6 +24,13 @@ pub struct UsageWindow {
     pub window_minutes: Option<i64>,
 }
 
+impl UsageWindow {
+    pub fn remaining_percent(&self) -> Option<f64> {
+        self.used_percent
+            .map(|used| (100.0 - used).clamp(0.0, 100.0))
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct UsageBucket {
     pub limit_id: String,
@@ -136,8 +143,8 @@ impl UsageRecord {
                 } else {
                     window_label.to_owned()
                 };
-                if let Some(used) = window.used_percent {
-                    bits.push(format!("{label} {}% used", format_percent(used)));
+                if let Some(remaining) = window.remaining_percent() {
+                    bits.push(format!("{label} {}% left", format_percent(remaining)));
                 }
                 if let Some(reset) = window.resets_at {
                     let when = DateTime::from_timestamp(reset, 0)
@@ -444,7 +451,7 @@ mod tests {
 
         let label = usage.label(1_000);
 
-        assert!(label.contains("primary 25% used"));
+        assert!(label.contains("primary 75% left"));
         assert!(label.contains("seen just now"));
     }
 
