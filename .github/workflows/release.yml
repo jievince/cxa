@@ -70,7 +70,7 @@ jobs:
         run: |
           mkdir -p "dist/$ASSET"
           install -m 0755 "target/$TARGET/release/cxa" "dist/$ASSET/cxa"
-          cp README.md LICENSE install.sh "dist/$ASSET/"
+          cp README.md README.zh-CN.md LICENSE install.sh "dist/$ASSET/"
           tar -C dist -czf "dist/$ASSET.tar.gz" "$ASSET"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
@@ -136,7 +136,7 @@ jobs:
         run: |
           mkdir -p "dist/$ASSET"
           install -m 0755 "target/$TARGET/release/cxa" "dist/$ASSET/cxa"
-          cp README.md LICENSE install.sh "dist/$ASSET/"
+          cp README.md README.zh-CN.md LICENSE install.sh "dist/$ASSET/"
           tar -C dist -czf "dist/$ASSET.tar.gz" "$ASSET"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
@@ -197,7 +197,7 @@ jobs:
 
   homebrew-validate:
     needs: publish
-    if: ${{ !contains(github.ref_name, '-') }}
+    if: ${{ github.repository == 'jesse-merhi/cxa' && !contains(github.ref_name, '-') }}
     strategy:
       fail-fast: false
       matrix:
@@ -254,7 +254,7 @@ jobs:
 
   homebrew:
     needs: homebrew-validate
-    if: ${{ !contains(github.ref_name, '-') }}
+    if: ${{ github.repository == 'jesse-merhi/cxa' && !contains(github.ref_name, '-') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6

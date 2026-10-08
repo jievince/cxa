@@ -74,6 +74,10 @@ assert_contract(
 )
 
 brew_validation = jobs.fetch("homebrew-validate")
+assert_contract(
+  brew_validation.fetch("if").include?("github.repository == 'jesse-merhi/cxa'"),
+  "fork releases must not update the upstream Homebrew tap"
+)
 brew_runners = brew_validation.dig("strategy", "matrix", "runner")
 assert_contract(
   brew_runners.sort == %w[macos-15 ubuntu-24.04],
@@ -89,6 +93,10 @@ assert_contract(
 )
 
 brew_publish = jobs.fetch("homebrew")
+assert_contract(
+  brew_publish.fetch("if").include?("github.repository == 'jesse-merhi/cxa'"),
+  "Homebrew publication must be restricted to the upstream repository"
+)
 assert_contract(brew_publish["needs"] == "homebrew-validate", "formula publication must wait for validation")
 assert_contract(
   named_step(brew_publish, "Publish formula").fetch("run", "").include?("mkdir -p homebrew-tap/Formula"),

@@ -6,15 +6,42 @@ use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use tempfile::Builder;
 
+use crate::api_account::ApiAccount;
 use crate::auth::{AuthDocument, Identity};
 use crate::config::Config;
+use crate::connection;
+use crate::cpa::CpaUsage;
 use crate::fs::{ExclusiveLock, atomic_copy, atomic_write, private_dir, sync_parent};
 use crate::{Error, Result};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Profile {
     pub slot: u32,
-    pub auth: AuthDocument,
+    pub account: Account,
+}
+
+#[derive(Clone)]
+pub enum Account {
+    Chatgpt(AuthDocument),
+    Api(ApiAccount),
+}
+
+impl Profile {
+    pub fn label(&self) -> &str {
+        match &self.account {
+            Account::Chatgpt(auth) => auth.identity.label(),
+            Account::Api(account) => &account.name,
+        }
+    }
+
+    pub fn oauth(&self) -> Result<&AuthDocument> {
+        match &self.account {
+            Account::Chatgpt(auth) => Ok(auth),
+            Account::Api(_) => Err(Error::Message(
+                "API-key accounts do not use ChatGPT OAuth login.".into(),
+            )),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -105,6 +132,10 @@ pub struct UsageRecord {
     pub last_attempted_at: i64,
     #[serde(default)]
     pub buckets: Vec<UsageBucket>,
+    #[serde(default)]
+    pub cpa: Option<CpaUsage>,
+    #[serde(default)]
+    pub refresh_error: Option<String>,
     pub error: Option<String>,
 }
 
@@ -134,6 +165,22 @@ impl UsageRecord {
             return error.clone();
         }
         let mut bits = Vec::new();
+        if let Some(cpa) = &self.cpa {
+            if cpa.unlimited {
+                bits.push("CPA allocation unlimited".into());
+            }
+            for dimension in &cpa.dimensions {
+                bits.push(format!(
+                    "CPA {} {} {}",
+                    dimension.window_label(),
+                    dimension.metric,
+                    dimension.amount_label()
+                ));
+                if let Some(when) = dimension.reset_at_label() {
+                    bits.push(format!("resets {when}"));
+                }
+            }
+        }
         let show_bucket = self.buckets.len() > 1;
         for bucket in &self.buckets {
             let bucket_label = bucket.limit_name.as_deref().unwrap_or(&bucket.limit_id);
@@ -187,6 +234,9 @@ impl UsageRecord {
 
     pub fn exhausted_now(&self, now: i64) -> bool {
         self.buckets.iter().any(|bucket| bucket.exhausted_now(now))
+            || self.cpa.as_ref().is_some_and(|cpa| {
+                !cpa.unlimited && cpa.dimensions.iter().any(|dimension| dimension.exhausted())
+            })
     }
 
     pub fn max_current_used_percent(&self, now: i64) -> Option<f64> {
@@ -248,17 +298,26 @@ impl Store {
             let Some(slot) = profile_slot(&entry.file_name().to_string_lossy()) else {
                 continue;
             };
-            let auth = AuthDocument::read(entry.path().join("auth.json"))?;
-            profiles.push(Profile { slot, auth });
+            let api_path = entry.path().join("api.json");
+            let account = if api_path.exists() {
+                Account::Api(ApiAccount::read(&api_path)?)
+            } else {
+                Account::Chatgpt(AuthDocument::read(entry.path().join("auth.json"))?)
+            };
+            profiles.push(Profile { slot, account });
         }
         profiles.sort_by_key(|profile| profile.slot);
         Ok(profiles)
     }
 
-    pub fn selected(&self) -> Option<u32> {
-        AuthDocument::read(&self.config.session_auth)
-            .ok()
-            .and_then(|auth| self.slot_for_identity(&auth.identity).ok().flatten())
+    pub fn selected(&self) -> Result<Option<u32>> {
+        if let Some(slot) = connection::active_api_slot(&self.config)? {
+            return Ok(Some(slot));
+        }
+        let Ok(auth) = AuthDocument::read(&self.config.session_auth) else {
+            return Ok(None);
+        };
+        self.slot_for_identity(&auth.identity)
     }
 
     pub fn resolve(&self, selector: &str) -> Result<Profile> {
@@ -272,14 +331,7 @@ impl Store {
         let selector = selector.to_ascii_lowercase();
         let matches: Vec<Profile> = profiles
             .into_iter()
-            .filter(|profile| {
-                profile
-                    .auth
-                    .identity
-                    .label()
-                    .to_ascii_lowercase()
-                    .contains(&selector)
-            })
+            .filter(|profile| profile.label().to_ascii_lowercase().contains(&selector))
             .collect();
         match matches.as_slice() {
             [profile] => Ok(profile.clone()),
@@ -294,7 +346,7 @@ impl Store {
         Ok(self
             .profiles()?
             .into_iter()
-            .find(|profile| profile.auth.identity.same_account(identity))
+            .find(|profile| matches!(&profile.account, Account::Chatgpt(auth) if auth.identity.same_account(identity)))
             .map(|profile| profile.slot))
     }
 
@@ -334,33 +386,58 @@ impl Store {
         sync_parent(&profile_dir)?;
         Ok(Profile {
             slot,
-            auth: AuthDocument::read(self.config.profile_auth(slot))?,
+            account: Account::Chatgpt(AuthDocument::read(self.config.profile_auth(slot))?),
+        })
+    }
+
+    pub fn enroll_api(&self, account: ApiAccount) -> Result<Profile> {
+        if self
+            .profiles()?
+            .iter()
+            .any(|profile| profile.label().eq_ignore_ascii_case(&account.name))
+        {
+            return Err(Error::Message(
+                "An account with this name already exists; nothing was changed.".into(),
+            ));
+        }
+        let slot = self.next_slot()?;
+        private_dir(&self.config.account_store)?;
+        let staging = Builder::new()
+            .prefix(".profile-")
+            .tempdir_in(&self.config.account_store)
+            .map_err(|error| Error::io(&self.config.account_store, error))?;
+        account.write(&staging.path().join("api.json"))?;
+        let profile_dir = self.config.profile_dir(slot);
+        fs::rename(staging.path(), &profile_dir).map_err(|error| Error::io(&profile_dir, error))?;
+        sync_parent(&profile_dir)?;
+        Ok(Profile {
+            slot,
+            account: Account::Api(account),
         })
     }
 
     pub fn replace(&self, slot: u32, source: &Path) -> Result<Profile> {
         let existing = self.resolve(&slot.to_string())?;
         let replacement = AuthDocument::read(source)?;
-        if !replacement.identity.same_account(&existing.auth.identity) {
+        if !replacement
+            .identity
+            .same_account(&existing.oauth()?.identity)
+        {
             return Err(Error::Message(format!(
                 "Signed in to a different account than account {slot} ({}). Nothing was changed.",
-                existing.auth.identity.label()
+                existing.label()
             )));
         }
         atomic_copy(source, &self.config.profile_auth(slot), 0o600)?;
         Ok(Profile {
             slot,
-            auth: AuthDocument::read(self.config.profile_auth(slot))?,
+            account: Account::Chatgpt(AuthDocument::read(self.config.profile_auth(slot))?),
         })
     }
 
     pub fn select(&self, slot: u32) -> Result<Profile> {
         let profile = self.resolve(&slot.to_string())?;
-        atomic_copy(
-            &self.config.profile_auth(slot),
-            &self.config.session_auth,
-            0o600,
-        )?;
+        connection::select(&self.config, &profile)?;
         Ok(profile)
     }
 
@@ -376,12 +453,12 @@ impl Store {
 
     pub fn status_lines(&self) -> Result<Vec<String>> {
         let selected = self
-            .selected()
+            .selected()?
             .ok_or_else(|| Error::Message("No Codex account is selected.".into()))?;
         let profile = self.resolve(&selected.to_string())?;
         let mut lines = vec![format!(
             "Selected Codex account: {selected}  {}",
-            profile.auth.identity.label()
+            profile.label()
         )];
         lines.push(format!(
             "Quota: {}",
@@ -398,8 +475,17 @@ impl Store {
 
     pub fn credential_status(&self, selected: u32) -> Result<String> {
         let profile = self.resolve(&selected.to_string())?;
+        if let Account::Api(_) = &profile.account {
+            return Ok(
+                if connection::active_api_slot(&self.config)? == Some(selected) {
+                    "matches the selected API connection".into()
+                } else {
+                    "does not match the selected API connection".into()
+                },
+            );
+        }
         let status = match AuthDocument::read(&self.config.session_auth) {
-            Ok(session) if session.identity.same_account(&profile.auth.identity) => {
+            Ok(session) if session.identity.same_account(&profile.oauth()?.identity) => {
                 "matches the selected account".into()
             }
             Ok(session) => {

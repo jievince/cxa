@@ -34,7 +34,7 @@ impl CancellationToken {
         self.0.store(true, Ordering::Relaxed);
     }
 
-    fn is_cancelled(&self) -> bool {
+    pub(crate) fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
 }
@@ -103,10 +103,7 @@ fn query_profile_inner(
         .tempdir_in(&config.account_store)
         .map_err(|error| Error::io(&config.account_store, error))?;
     atomic_copy(source_auth, &home.path().join("auth.json"), 0o600)?;
-    let source_config = config.codex_home.join("config.toml");
-    if source_config.is_file() {
-        atomic_copy(&source_config, &home.path().join("config.toml"), 0o600)?;
-    }
+    crate::connection::copy_oauth_config(config, &home.path().join("config.toml"))?;
 
     let mut client = SpawnedClient::start(
         config.codex_binary(),
@@ -219,6 +216,7 @@ fn parse_usage(result: &Value) -> Result<UsageRecord> {
         last_attempted_at: observed_at,
         buckets,
         error: None,
+        ..UsageRecord::default()
     })
 }
 

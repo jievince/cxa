@@ -1,5 +1,6 @@
 use std::fs::{self, File};
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
+use std::net::TcpListener;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt, symlink};
 use std::os::unix::process::CommandExt;
@@ -257,6 +258,27 @@ exit 1
         );
         let output = self.run(&["init", "--yes"]);
         assert_success(&output);
+    }
+
+    fn add_api(&self, name: &str, base_url: &str, key: &str) -> Output {
+        let mut child = self
+            .command()
+            .args([
+                "add",
+                "--api-key",
+                "--name",
+                name,
+                "--base-url",
+                base_url,
+                "--api-key-stdin",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writeln!(child.stdin.take().unwrap(), "{key}").unwrap();
+        child.wait_with_output().unwrap()
     }
 }
 
@@ -774,7 +796,7 @@ done
     assert!(!account_one_output.contains("23% left"));
     assert!(account_two_output.contains("23% left"));
     assert!(account_two_output.contains("Codex Spark  EXHAUSTED"));
-    assert!(account_two_output.contains("[░░░░░░░░░░░░░░░░]   0% left"));
+    assert!(account_two_output.contains("[░░░░░░░░░░░░░░░░]    0% left"));
     assert!(!stdout.contains("codex primary"));
     assert!(stdout.lines().all(|line| line.chars().count() <= 80));
     assert!(!String::from_utf8_lossy(&output.stderr).contains("Fetching usage"));
@@ -1090,4 +1112,688 @@ fn api_key_environment_does_not_block_file_credentials() {
 
     assert_success(&output);
     assert!(String::from_utf8_lossy(&output.stdout).contains("one@example.com"));
+}
+
+const PERSONAL_CONFIG: &str = r#"# Personal defaults must survive switching.
+model = "gpt-6.1-sol"
+model_provider = "unicodex"
+model_reasoning_effort = "high"
+approval_policy = "on-request"
+
+[model_providers.unicodex]
+name = "OpenAI"
+base_url = "https://chatgpt.com/backend-api/codex" # Personal route
+wire_api = "responses"
+requires_openai_auth = true
+stream_idle_timeout_ms = 600000 # Keep provider tuning
+
+[mcp_servers.example]
+command = "example-mcp"
+args = ["--read-only"]
+
+[projects."/workspace"]
+trust_level = "trusted"
+"#;
+
+fn read_config(case: &Case) -> Value {
+    toml_edit::de::from_str(&fs::read_to_string(case.codex_home.join("config.toml")).unwrap())
+        .unwrap()
+}
+
+#[test]
+fn root_help_explains_supported_accounts_and_restart_requirement() {
+    let case = Case::new();
+    let output = case.run(&["--help"]);
+    assert_success(&output);
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("ChatGPT subscription accounts"));
+    assert!(help.contains("CLIProxyAPI (CPA) API-key accounts"));
+    assert!(help.contains("model_provider"));
+    assert!(help.contains("Existing Codex processes must be restarted"));
+    assert!(help.contains("Arbitrary third-party API-key services are not supported"));
+    assert!(!case.store.exists());
+}
+
+#[test]
+fn api_add_help_explains_cpa_scope_and_local_only_enrollment() {
+    let case = Case::new();
+    let output = case.run(&["add", "--help"]);
+    assert_success(&output);
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("CLIProxyAPI (CPA)"));
+    assert!(help.contains("Arbitrary API-key services are not supported"));
+    assert!(help.contains("OpenAI Responses API and /models"));
+    assert!(help.contains("/v0/resource/plugins/cpa-key-billing/subscription"));
+    assert!(help.contains("with the enrolled key as a Bearer token"));
+    assert!(help.contains("cxa does not install or load server plugins"));
+    assert!(help.contains("does not verify the key"));
+    assert!(help.contains("cxa use ACCOUNT"));
+    assert!(help.contains("cxa list"));
+    assert!(!case.store.exists());
+}
+
+#[test]
+fn interactive_api_add_identifies_cpa_and_does_not_echo_the_key() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+    let mut command = case.command();
+    command.args([
+        "add",
+        "--api-key",
+        "--name",
+        "company",
+        "--base-url",
+        "http://company.test:8317/v1",
+    ]);
+    let mut enrollment = PtyChild::spawn(command);
+    enrollment.wait_for_output(b"CPA API key (hidden):");
+    enrollment.send(b"secret-interactive-key\n");
+    enrollment.wait_success();
+    let output = String::from_utf8_lossy(&enrollment.output);
+    assert!(output.contains("supports CLIProxyAPI (CPA) accounts only"));
+    assert!(output.contains("GET + Bearer authentication"));
+    assert!(output.contains("the key has not been verified"));
+    assert!(!output.contains("secret-interactive-key"));
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    assert_eq!(
+        fs::read_to_string(case.codex_home.join("config.toml")).unwrap(),
+        PERSONAL_CONFIG
+    );
+    assert!(!case.store.join("connection.json").exists());
+}
+
+#[test]
+fn api_enrollment_preserves_login_and_config_and_hides_the_key() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+
+    let output = case.add_api(
+        "company",
+        "http://company.test:8317/v1",
+        "secret-company-key",
+    );
+
+    assert_success(&output);
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("supports CLIProxyAPI (CPA) accounts only")
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("GET + Bearer authentication"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("(CPA API key)"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("the key has not been verified"));
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("current login and config.toml were not changed")
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("secret-company-key"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("secret-company-key"));
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    assert_eq!(
+        fs::read_to_string(case.codex_home.join("config.toml")).unwrap(),
+        PERSONAL_CONFIG
+    );
+    assert_eq!(
+        fs::metadata(case.store.join("profile-2/api.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    assert!(!case.store.join("connection.json").exists());
+}
+
+#[test]
+fn custom_provider_switch_round_trip_preserves_general_settings_and_rotated_oauth() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    let (base_url, server) = api_server(&[("200 OK", MODEL_LIST)]);
+    assert_success(&case.add_api("company", &base_url, "company-key"));
+    write_auth(
+        &case.codex_home.join("auth.json"),
+        "personal@example.com",
+        "personal",
+        "personal",
+        "rotated-token",
+    );
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+
+    let output = case.run(&["use", "company"]);
+    assert_success(&output);
+    server.join().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Gateway models: gpt-6-sol, gpt-6.1-sol"));
+    assert!(stdout.contains("Select an advertised model in that chat"));
+    assert_eq!(read_config(&case)["model"], "gpt-6.1-sol");
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    assert_eq!(read_config(&case)["model_provider"], "unicodex");
+    assert_eq!(
+        read_config(&case)["model_providers"]["unicodex"]["experimental_bearer_token"],
+        "company-key"
+    );
+    assert_eq!(
+        read_config(&case)["model_providers"]["unicodex"]["requires_openai_auth"],
+        false
+    );
+    let output = case.run(&["list"]);
+    assert_success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("* 2  company  CPA API key"));
+
+    // A setting edited during company mode must not be overwritten by the saved route.
+    let path = case.codex_home.join("config.toml");
+    let edited = fs::read_to_string(&path)
+        .unwrap()
+        .replace("600000", "900000")
+        .replace("\"high\"", "\"medium\"");
+    fs::write(&path, edited).unwrap();
+    assert_success(&case.run(&["use", "personal"]));
+
+    let restored = read_config(&case);
+    let expected: Value = toml_edit::de::from_str(
+        &PERSONAL_CONFIG
+            .replace("600000", "900000")
+            .replace("\"high\"", "\"medium\""),
+    )
+    .unwrap();
+    assert_eq!(restored, expected);
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    assert_eq!(
+        access_token(&case.store.join("profile-1/auth.json")),
+        "rotated-token"
+    );
+    let text = fs::read_to_string(path).unwrap();
+    assert!(text.contains("# Personal defaults must survive switching."));
+    assert!(text.contains("# Personal route"));
+    assert!(text.contains("# Keep provider tuning"));
+    assert!(!text.contains("company-key"));
+    assert!(!case.store.join("switch-pending.json").exists());
+}
+
+#[test]
+fn successive_api_switches_restore_the_original_oauth_route() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    let (company_url, company_server) = api_server(&[("200 OK", MODEL_LIST)]);
+    let (other_url, other_server) = api_server(&[("200 OK", MODEL_LIST)]);
+    assert_success(&case.add_api("company", &company_url, "first-key"));
+    assert_success(&case.add_api("other", &other_url, "second-key"));
+    assert_success(&case.run(&["2"]));
+    assert_success(&case.run(&["3"]));
+    company_server.join().unwrap();
+    other_server.join().unwrap();
+    assert_eq!(
+        read_config(&case)["model_providers"]["unicodex"]["experimental_bearer_token"],
+        "second-key"
+    );
+    assert_success(&case.run(&["1"]));
+    let expected: Value = toml_edit::de::from_str(PERSONAL_CONFIG).unwrap();
+    assert_eq!(read_config(&case), expected);
+}
+
+#[test]
+fn builtin_openai_switch_keeps_default_provider_and_restores_login() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    fs::write(
+        case.codex_home.join("config.toml"),
+        "# defaults\nmodel_reasoning_effort = \"high\"\n",
+    )
+    .unwrap();
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+    let (base_url, server) = api_server(&[("200 OK", MODEL_LIST)]);
+    assert_success(&case.add_api("company", &base_url, "company-key"));
+    assert_success(&case.run(&["2"]));
+    server.join().unwrap();
+    assert!(read_config(&case).get("model_provider").is_none());
+    assert_eq!(
+        read_config(&case)["openai_base_url"],
+        base_url.trim_end_matches('/')
+    );
+    let api_auth: Value =
+        serde_json::from_slice(&fs::read(case.codex_home.join("auth.json")).unwrap()).unwrap();
+    assert_eq!(api_auth["OPENAI_API_KEY"], "company-key");
+    assert_eq!(
+        fs::read(case.store.join("profile-1/auth.json")).unwrap(),
+        auth
+    );
+    assert!(String::from_utf8_lossy(&case.run(&["status"]).stdout).contains("* 2  company"));
+    assert_success(&case.run(&["1"]));
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    assert!(read_config(&case).get("openai_base_url").is_none());
+    assert!(read_config(&case).get("model_provider").is_none());
+}
+
+#[test]
+fn connection_edits_outside_cxa_are_reported_without_overwriting_them() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    let (base_url, server) = api_server(&[("200 OK", MODEL_LIST)]);
+    assert_success(&case.add_api("company", &base_url, "company-key"));
+    assert_success(&case.run(&["2"]));
+    server.join().unwrap();
+    let path = case.codex_home.join("config.toml");
+    let edited = fs::read_to_string(&path)
+        .unwrap()
+        .replace(base_url.trim_end_matches('/'), "http://manual.test/v1");
+    fs::write(&path, &edited).unwrap();
+    let output = case.run(&["1"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("changed outside cxa"));
+    assert_eq!(fs::read_to_string(path).unwrap(), edited);
+    assert_eq!(
+        access_token(&case.codex_home.join("auth.json")),
+        "token-one"
+    );
+}
+
+#[test]
+fn interrupted_switch_is_recovered_before_reading_config() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+    fs::write(case.codex_home.join("config.toml"), "invalid = [").unwrap();
+    fs::write(case.codex_home.join("auth.json"), "partial").unwrap();
+    fs::write(case.store.join("connection.json"), "partial").unwrap();
+    fs::write(
+        case.store.join("switch-pending.json"),
+        serde_json::to_vec(&json!({
+            "config": PERSONAL_CONFIG.as_bytes(), "auth": auth, "state": null,
+            "config_changed": true, "auth_changed": true,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_success(&case.run(&["status"]));
+    assert_eq!(
+        fs::read_to_string(case.codex_home.join("config.toml")).unwrap(),
+        PERSONAL_CONFIG
+    );
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    assert!(!case.store.join("connection.json").exists());
+    assert!(!case.store.join("switch-pending.json").exists());
+}
+
+const MODEL_LIST: &str =
+    r#"{"data":[{"id":"gpt-6.1-sol"},{"id":"gpt-6-sol"},{"id":"gpt-6.1-sol"}]}"#;
+
+fn api_server(responses: &[(&str, &str)]) -> (String, thread::JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}/proxy/v1/", listener.local_addr().unwrap());
+    let responses: Vec<_> = responses
+        .iter()
+        .map(|(status, body)| (status.to_string(), body.to_string()))
+        .collect();
+    let worker = thread::spawn(move || {
+        listener.set_nonblocking(true).unwrap();
+        let mut requests = Vec::new();
+        for (status, body) in responses {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        thread::sleep(Duration::from_millis(10))
+                    }
+                    Err(error) => panic!("API client did not connect: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0];
+            while !request.ends_with(b"\r\n\r\n") {
+                assert_eq!(stream.read(&mut byte).unwrap(), 1);
+                request.push(byte[0]);
+            }
+            write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            requests.push(String::from_utf8(request).unwrap());
+        }
+        requests
+    });
+    (base_url, worker)
+}
+
+#[test]
+fn unsupported_default_model_stops_api_switch_without_changing_login_or_config() {
+    for model in ["gpt-5.6-sol", "gpt-6.1-astra"] {
+        let case = Case::new();
+        case.seed("personal@example.com", "personal", "personal");
+        let config = PERSONAL_CONFIG.replace("gpt-6.1-sol", model);
+        fs::write(case.codex_home.join("config.toml"), &config).unwrap();
+        let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+        let (base_url, server) = api_server(&[("200 OK", MODEL_LIST)]);
+        assert_success(&case.add_api("company", &base_url, "secret-company-key"));
+
+        let output = case.run(&["use", "company"]);
+
+        server.join().unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(&format!("Default model `{model}`")));
+        assert!(stderr.contains("Available models: gpt-6-sol, gpt-6.1-sol"));
+        assert!(stderr.contains("no account, auth.json, or config.toml was changed"));
+        assert!(!stderr.contains("secret-company-key"));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("is now selected"));
+        assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+        assert_eq!(
+            fs::read_to_string(case.codex_home.join("config.toml")).unwrap(),
+            config
+        );
+        assert!(!case.store.join("connection.json").exists());
+        assert!(!case.store.join("switch-pending.json").exists());
+    }
+}
+
+#[test]
+fn models_command_queries_exact_gateway_url_and_bearer_without_switching() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+    let (base_url, server) = api_server(&[("200 OK", MODEL_LIST)]);
+    assert_success(&case.add_api("company", &base_url, "secret-company-key"));
+
+    let output = case.run(&["models", "company"]);
+
+    assert_success(&output);
+    let requests = server.join().unwrap();
+    assert!(requests[0].starts_with("GET /proxy/v1/models HTTP/1.1\r\n"));
+    assert!(
+        requests[0]
+            .to_lowercase()
+            .contains("authorization: bearer secret-company-key\r\n")
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Gateway models for company:\n  gpt-6-sol\n  gpt-6.1-sol\n"
+    );
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("secret-company-key"));
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    assert_eq!(
+        fs::read_to_string(case.codex_home.join("config.toml")).unwrap(),
+        PERSONAL_CONFIG
+    );
+    assert!(!case.store.join("connection.json").exists());
+}
+
+#[test]
+fn models_command_defaults_to_selected_api_account() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    let (base_url, server) = api_server(&[("200 OK", MODEL_LIST), ("200 OK", MODEL_LIST)]);
+    assert_success(&case.add_api("company", &base_url, "secret-company-key"));
+    assert_success(&case.run(&["use", "company"]));
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+    let config = fs::read(case.codex_home.join("config.toml")).unwrap();
+
+    let output = case.run(&["models"]);
+
+    assert_success(&output);
+    assert_eq!(server.join().unwrap().len(), 2);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Gateway models for company"));
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    assert_eq!(
+        fs::read(case.codex_home.join("config.toml")).unwrap(),
+        config
+    );
+}
+
+#[test]
+fn models_command_does_not_query_chatgpt_account_as_api() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    let output = case.run(&["models"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("queries API gateways only"));
+}
+
+#[test]
+fn model_list_failures_stop_switch_without_echoing_gateway_error_bodies() {
+    for (status, body, expected) in [
+        ("401 Unauthorized", "secret-company-key", "HTTP 401"),
+        (
+            "302 Found\r\nLocation: http://127.0.0.1:9/secret-company-key",
+            "secret-company-key",
+            "HTTP 302",
+        ),
+        ("200 OK", "secret-company-key", "no valid model list"),
+        ("200 OK", r#"{"data":[]}"#, "advertised no models"),
+        ("200 OK", r#"{"data":[{"id":""}]}"#, "invalid model ID"),
+        (
+            "200 OK",
+            r#"{"data":[{"id":"gpt-6.1-sol\u001b"}]}"#,
+            "invalid model ID",
+        ),
+    ] {
+        let case = Case::new();
+        case.seed("personal@example.com", "personal", "personal");
+        fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+        let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+        let (base_url, server) = api_server(&[(status, body)]);
+        assert_success(&case.add_api("company", &base_url, "secret-company-key"));
+
+        let output = case.run(&["2"]);
+
+        server.join().unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(stderr.contains("No account or connection was switched"));
+        assert!(!stderr.contains("secret-company-key"));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("is now selected"));
+        assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+        assert_eq!(
+            fs::read_to_string(case.codex_home.join("config.toml")).unwrap(),
+            PERSONAL_CONFIG
+        );
+        assert!(!case.store.join("connection.json").exists());
+    }
+}
+
+#[test]
+fn unreachable_model_endpoint_stops_switch_without_changing_login_or_config() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    drop(listener);
+    assert_success(&case.add_api("company", &base_url, "secret-company-key"));
+
+    let output = case.run(&["2"]);
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("connection or TLS error"));
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    assert_eq!(
+        fs::read_to_string(case.codex_home.join("config.toml")).unwrap(),
+        PERSONAL_CONFIG
+    );
+}
+
+#[test]
+fn list_queries_cpa_key_allocation_with_bearer_auth_and_shows_remaining() {
+    let case = Case::new();
+    let (base_url, server) = api_server(&[(
+        "200 OK",
+        r#"{"subscription":{"windows":[{"name":"Core","period_seconds":604800,"end_at":"2026-10-13T16:00:00Z","dimensions":[{"metric":"amount_usd","limit":100,"used":30},{"metric":"tokens","limit":1000,"used":800}]}]}}"#,
+    )]);
+    assert_success(&case.add_api("company", &base_url, "company-test-key"));
+    let output = case
+        .command()
+        .env_remove("CXA_SKIP_USAGE_REFRESH")
+        .arg("list")
+        .output()
+        .unwrap();
+    let requests = server.join().unwrap();
+    let request = &requests[0];
+    assert_success(&output);
+    assert!(
+        request.starts_with(
+            "GET /proxy/v0/resource/plugins/cpa-key-billing/subscription HTTP/1.1\r\n"
+        )
+    );
+    assert!(
+        request
+            .to_lowercase()
+            .contains("authorization: bearer company-test-key\r\n")
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("70% left"));
+    assert!(stdout.contains("$70.00 / $100.00 left"));
+    assert!(stdout.contains("20% left"));
+    assert!(stdout.contains("200 tokens / 1000 tokens left"));
+    assert!(stdout.contains("Core · USD"));
+    assert!(stdout.contains("Core · Tokens"));
+    assert!(stdout.contains("Weekly   ["));
+    assert!(!stdout.contains("amount_usd"));
+    assert!(!stdout.contains("resets at "));
+    let cached: serde_json::Value =
+        serde_json::from_slice(&fs::read(case.store.join("profile-1/usage.json")).unwrap())
+            .unwrap();
+    assert_eq!(cached["cpa"]["dimensions"][0]["window_name"], "Core");
+    assert_eq!(cached["cpa"]["dimensions"][0]["period_seconds"], 604800);
+    assert_eq!(cached["cpa"]["dimensions"][0]["resets_at"], 1791907200_i64);
+    assert!(!stdout.contains("company-test-key"));
+}
+
+#[test]
+fn cpa_http_failure_reports_the_failure_and_marks_cached_quota_stale() {
+    let case = Case::new();
+    let (base_url, server) = api_server(&[("401 Unauthorized", "secret-company-key")]);
+    assert_success(&case.add_api("company", &base_url, "secret-company-key"));
+    let now = cxa::account_store::now_epoch();
+    fs::write(
+        case.store.join("profile-1/usage.json"),
+        serde_json::to_vec(&json!({
+            "observed_at": now - 600, "last_attempted_at": now - 600, "error": null,
+            "cpa": {"unlimited": true, "dimensions": []},
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = case
+        .command()
+        .env_remove("CXA_SKIP_USAGE_REFRESH")
+        .arg("list")
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Last refresh failed: CPA quota request failed (HTTP 401)."));
+    assert!(stdout.contains("Showing cached quota."));
+    assert!(!stdout.contains("secret-company-key"));
+}
+
+#[test]
+fn oauth_quota_uses_personal_route_while_company_is_selected() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    let (base_url, server) = api_server(&[
+        ("200 OK", MODEL_LIST),
+        ("200 OK", r#"{"subscription":{"unlimited":true}}"#),
+    ]);
+    assert_success(&case.add_api("company", &base_url, "secret-company-key"));
+    assert_success(&case.run(&["2"]));
+    let codex = case.home.join("quota-codex");
+    write_executable(
+        &codex,
+        r#"#!/bin/sh
+case "$CODEX_HOME" in
+  "$CXA_ACCOUNT_STORE"/.quota-*)
+    grep -q 'requires_openai_auth = true' "$CODEX_HOME/config.toml" || exit 5
+    grep -q 'https://chatgpt.com/backend-api/codex' "$CODEX_HOME/config.toml" || exit 6
+    if grep -q secret-company-key "$CODEX_HOME/config.toml"; then exit 7; fi
+    while IFS= read -r line; do
+      case "$line" in
+        *'"id":0'*) printf '%s\n' '{"id":0,"result":{}}' ;;
+        *'"id":1'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+        *'"id":2'*) printf '%s\n' '{"id":2,"result":{"rateLimits":{"planType":"plus","primary":{"usedPercent":25,"windowDurationMins":300}}}}' ;;
+      esac
+    done
+    ;;
+  *)
+    while IFS= read -r line; do
+      case "$line" in
+        *'"id":0'*) printf '%s\n' '{"id":0,"result":{}}' ;;
+        *'"method":"config/read"'*) printf '%s\n' '{"id":1,"result":{"config":{"cli_auth_credentials_store":"file"}}}' ;;
+      esac
+    done
+    ;;
+esac
+"#,
+    );
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+    let output = case
+        .command()
+        .env_remove("CXA_SKIP_USAGE_REFRESH")
+        .env("CXA_CODEX_BIN", codex)
+        .arg("list")
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("75% left"));
+    assert!(stdout.contains("* 2  company  CPA API key"));
+    assert!(stdout.contains("CPA allocation  Unlimited"));
+    assert!(!stdout.contains("quota unavailable"));
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    assert_eq!(
+        read_config(&case)["model_providers"]["unicodex"]["experimental_bearer_token"],
+        "secret-company-key"
+    );
+}
+
+#[test]
+fn watch_cancels_a_pending_cpa_request_promptly() {
+    let case = Case::new();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    assert_success(&case.add_api(
+        "company",
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "dummy-key",
+    ));
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut byte = [0];
+        while !request.ends_with(b"\r\n\r\n") {
+            assert_eq!(stream.read(&mut byte).unwrap(), 1);
+            request.push(byte[0]);
+        }
+        sender.send(()).unwrap();
+        // The connection should close on cancellation, without a response.
+        assert_eq!(stream.read(&mut byte).unwrap(), 0);
+    });
+    let mut command = case.command();
+    command.env_remove("CXA_SKIP_USAGE_REFRESH").arg("watch");
+    let mut watch = PtyChild::spawn(command);
+    watch.wait_for_output(b"loading");
+    receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+    let started = Instant::now();
+    watch.send(b"q");
+    watch.wait_success();
+    assert!(started.elapsed() < Duration::from_secs(2));
+    watch.assert_terminal_restored();
+    server.join().unwrap();
 }

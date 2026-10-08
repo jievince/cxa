@@ -42,7 +42,7 @@ pub fn usage_plan(usage: Option<&UsageRecord>) -> Option<String> {
 
 pub fn usage_recency(usage: Option<&UsageRecord>, now: i64) -> Option<String> {
     let usage = usage?;
-    if usage.error.is_some() || usage.buckets.is_empty() {
+    if usage.error.is_some() || (usage.buckets.is_empty() && usage.cpa.is_none()) {
         Some(format!(
             "checked {}",
             age_label(usage.last_attempted_at.max(usage.observed_at), now)
@@ -64,6 +64,43 @@ pub fn render_usage(usage: Option<&UsageRecord>, now: i64) -> String {
     };
     if let Some(error) = &usage.error {
         writeln!(output, "    {WARNING}{error}{WARNING:#}").unwrap();
+        return output;
+    }
+    if let Some(error) = &usage.refresh_error {
+        writeln!(
+            output,
+            "    {WARNING}Last refresh failed: {error} Showing cached quota.{WARNING:#}"
+        )
+        .unwrap();
+    }
+    if let Some(cpa) = &usage.cpa {
+        if cpa.unlimited {
+            writeln!(output, "    {SUCCESS}CPA allocation  Unlimited{SUCCESS:#}").unwrap();
+        }
+        for dimension in &cpa.dimensions {
+            let style = usage_style(dimension.remaining_percent);
+            writeln!(
+                output,
+                "    {EMPHASIS}{} · {}{EMPHASIS:#}",
+                dimension.name_label(),
+                dimension.metric_label()
+            )
+            .unwrap();
+            let period = dimension.period_label().unwrap_or_else(|| "--".into());
+            write_quota_window(
+                &mut output,
+                &period,
+                dimension.remaining_percent,
+                dimension.resets_at,
+                now,
+            );
+            writeln!(
+                output,
+                "               {style}{}{style:#}",
+                dimension.amount_label()
+            )
+            .unwrap();
+        }
         return output;
     }
     if usage.buckets.is_empty() {
@@ -370,18 +407,32 @@ fn write_bucket(output: &mut String, bucket: &UsageBucket, now: i64) {
 
 fn write_window(output: &mut String, fallback: &str, window: &UsageWindow, now: i64) {
     let label = window_label(fallback, window.window_minutes);
-    let remaining = window.remaining_percent();
+    write_quota_window(
+        output,
+        &label,
+        window.remaining_percent(),
+        window.resets_at,
+        now,
+    );
+}
+
+fn write_quota_window(
+    output: &mut String,
+    label: &str,
+    remaining: Option<f64>,
+    resets_at: Option<i64>,
+    now: i64,
+) {
     let percent = remaining.map(format_percent);
     let bar = progress_bar(remaining);
     let style = usage_style(remaining);
     let percent = percent.unwrap_or_else(|| "--".into());
-    let reset = window
-        .resets_at
-        .map(|reset| format!("  {}", reset_label(reset, now)))
-        .unwrap_or_default();
+    let reset = resets_at
+        .map(|reset| reset_label(reset, now))
+        .unwrap_or_else(|| "reset time not provided".into());
     writeln!(
         output,
-        "      {MUTED}{label:<8}{MUTED:#} {style}{bar}{style:#} {style}{percent:>3}% left{style:#}{MUTED}{reset}{MUTED:#}"
+        "      {MUTED}{label:<8}{MUTED:#} {style}{bar}{style:#} {style}{percent:>4}% left{style:#}{MUTED}  {reset}{MUTED:#}"
     )
     .unwrap();
 }
@@ -514,6 +565,84 @@ fn plan_label(plan: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cpa_window_uses_the_same_quota_row_as_chatgpt() {
+        let resets_at = 1_790_438_400;
+        let usage: UsageRecord = serde_json::from_value(serde_json::json!({
+            "observed_at": 1000, "error": null,
+            "cpa": {"unlimited": false, "dimensions": [{
+                "window": 1, "window_name": "Core", "period_seconds": 604800,
+                "resets_at": resets_at, "metric": "amount_usd", "limit": 400,
+                "remaining": 399, "remaining_percent": 99.75
+            }]}
+        }))
+        .unwrap();
+        let now = resets_at - 3 * 86400 - 8 * 3600;
+        let output = render_usage(Some(&usage), now);
+        assert!(output.contains("Core · USD"));
+        assert!(output.contains("$399.00 / $400.00 left"));
+        assert!(output.contains("resets in 3d 8h"));
+        let mut chatgpt_row = String::new();
+        write_window(
+            &mut chatgpt_row,
+            "secondary",
+            &UsageWindow {
+                used_percent: Some(0.25),
+                window_minutes: Some(10080),
+                resets_at: Some(resets_at),
+            },
+            now,
+        );
+        assert_eq!(output.lines().nth(1), chatgpt_row.lines().next());
+        assert_eq!(output.lines().count(), 3);
+        assert!(!output.contains("amount_usd"));
+        assert!(!output.contains("resets at"));
+    }
+
+    #[test]
+    fn cpa_missing_reset_is_explicit_and_does_not_invent_a_cycle() {
+        let usage: UsageRecord = serde_json::from_value(serde_json::json!({
+            "observed_at": 1000, "error": null,
+            "cpa": {"unlimited": false, "dimensions": [{
+                "window": 1, "metric": "amount_usd", "limit": 100,
+                "remaining": 70, "remaining_percent": 70
+            }]}
+        }))
+        .unwrap();
+        let output = render_usage(Some(&usage), 1000);
+        assert!(output.contains("Window 1 · USD"));
+        assert!(output.contains("reset time not provided"));
+        assert!(!output.contains("Weekly"));
+    }
+
+    #[test]
+    fn quota_rows_align_integer_and_fractional_remaining_percentages() {
+        let mut output = String::new();
+        write_quota_window(&mut output, "Weekly", Some(100.0), Some(2000), 1000);
+        write_quota_window(&mut output, "Weekly", Some(99.2), Some(2000), 1000);
+        let rows: Vec<_> = output.lines().collect();
+        assert_eq!(rows[0].find('%'), rows[1].find('%'));
+        assert_eq!(rows[0].find("resets"), rows[1].find("resets"));
+    }
+
+    #[test]
+    fn cpa_unlimited_dimension_does_not_show_unknown_percentage_as_zero() {
+        let usage: UsageRecord = serde_json::from_value(serde_json::json!({
+            "observed_at": 1000, "error": null,
+            "cpa": {"unlimited": false, "dimensions": [{
+                "window": 1, "window_name": "Core", "period_seconds": 604800,
+                "metric": "requests", "limit": 0,
+                "remaining": null, "remaining_percent": null
+            }]}
+        }))
+        .unwrap();
+        let output = render_usage(Some(&usage), 1000);
+        assert!(output.contains("Core · Requests"));
+        assert!(output.contains("--% left"));
+        assert!(output.contains("Unlimited"));
+        assert!(!output.contains("0% left"));
+    }
 
     #[test]
     fn progress_bar_clamps_and_fills_to_remaining_percentage() {

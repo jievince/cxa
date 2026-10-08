@@ -95,3 +95,4 @@ fi
 
 printf 'Installed cxa at %s/.local/bin/cxa\n' "$login_home"
 printf 'Next step: %s/.local/bin/cxa init\n' "$login_home"
+printf 'For a CPA-only setup: %s/.local/bin/cxa add --api-key --name NAME --base-url URL\n' "$login_home"
