@@ -94,12 +94,7 @@ pub fn render_usage(usage: Option<&UsageRecord>, now: i64) -> String {
                 dimension.resets_at,
                 now,
             );
-            writeln!(
-                output,
-                "               {style}{}{style:#}",
-                dimension.amount_label()
-            )
-            .unwrap();
+            writeln!(output, "      {style}{}{style:#}", dimension.amount_label()).unwrap();
         }
         return output;
     }

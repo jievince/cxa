@@ -53,6 +53,7 @@ enum CliCommand {
         yes: bool,
     },
     /// List enrolled accounts and their remaining quota.
+    /// Display positions start at 1; account commands accept names only.
     List {
         /// Keep the live list open and refresh it periodically.
         #[arg(short, long)]
@@ -522,7 +523,7 @@ impl App {
         let usage = self.store.usage(selected);
         print!(
             "{}",
-            profile_output(&profile, true, usage.as_ref(), now_epoch())
+            profile_output(&profile, true, None, usage.as_ref(), now_epoch())
         );
         let credential = self.store.credential_status(selected)?;
         let style = if credential.starts_with("matches") {
@@ -940,12 +941,19 @@ fn profile_list(
         }
         match state {
             ProfileUsage::Loading => {
-                write_loading_profile(&mut output, profile, selected == Some(profile.slot), frame);
+                write_loading_profile(
+                    &mut output,
+                    profile,
+                    selected == Some(profile.slot),
+                    index + 1,
+                    frame,
+                );
             }
             ProfileUsage::Ready(usage) => {
                 output.push_str(&profile_output(
                     profile,
                     selected == Some(profile.slot),
+                    Some(index + 1),
                     usage.as_ref(),
                     now,
                 ));
@@ -955,13 +963,24 @@ fn profile_list(
     output
 }
 
-fn write_loading_profile(output: &mut String, profile: &Profile, selected: bool, frame: usize) {
-    let marker = if selected { "*" } else { " " };
+fn write_loading_profile(
+    output: &mut String,
+    profile: &Profile,
+    selected: bool,
+    ordinal: usize,
+    frame: usize,
+) {
+    output.push_str(&profile_header(
+        profile,
+        selected,
+        Some(ordinal),
+        None,
+        now_epoch(),
+    ));
     let spinner = LOADING_FRAMES[frame % LOADING_FRAMES.len()];
     writeln!(
         output,
-        "{ACCENT}{marker}{ACCENT:#} {EMPHASIS}{}{EMPHASIS:#}  {ACCENT}{spinner}{ACCENT:#} {MUTED}loading{MUTED:#}",
-        profile.heading()
+        "    {ACCENT}{spinner}{ACCENT:#} {MUTED}loading{MUTED:#}"
     )
     .unwrap();
 }
@@ -990,52 +1009,57 @@ fn refresh_usage_for_config(
     Ok(session_changed)
 }
 
-fn profile_output(
+fn profile_header(
     profile: &Profile,
     selected: bool,
+    ordinal: Option<usize>,
     usage: Option<&UsageRecord>,
     now: i64,
 ) -> String {
     let mut output = String::new();
-    let marker = if selected { "*" } else { " " };
     let plan = match &profile.account {
-        Account::Chatgpt(_) => usage_plan(usage),
-        Account::Api(account) => Some(account.api_type.label().into()),
+        Account::Chatgpt(_) => usage_plan(usage).unwrap_or_else(|| "ChatGPT".into()),
+        Account::Api(account) => account.api_type.label().into(),
     };
     let recency = if profile.supports_usage() {
         usage_recency(usage, now)
     } else {
         None
     };
-    if let (Some(plan), Some(recency)) = (plan.as_deref(), recency.as_deref()) {
-        writeln!(
-            output,
-            "{ACCENT}{marker}{ACCENT:#} {EMPHASIS}{}{EMPHASIS:#}  {MUTED}{plan} · {recency}{MUTED:#}",
-            profile.heading()
-        )
-        .unwrap();
-    } else if let Some(plan) = plan {
-        writeln!(
-            output,
-            "{ACCENT}{marker}{ACCENT:#} {EMPHASIS}{}{EMPHASIS:#}  {MUTED}{plan}{MUTED:#}",
-            profile.heading()
-        )
-        .unwrap();
-    } else if let Some(recency) = recency {
-        writeln!(
-            output,
-            "{ACCENT}{marker}{ACCENT:#} {EMPHASIS}{}{EMPHASIS:#}  {MUTED}{recency}{MUTED:#}",
-            profile.heading()
-        )
-        .unwrap();
-    } else {
-        writeln!(
-            output,
-            "{ACCENT}{marker}{ACCENT:#} {EMPHASIS}{}{EMPHASIS:#}",
-            profile.heading()
-        )
-        .unwrap();
+    // Ordinals are presentation positions, never stored account identities or selectors.
+    if let Some(ordinal) = ordinal {
+        write!(output, "{MUTED}{ordinal}.{MUTED:#} ").unwrap();
     }
+    write!(
+        output,
+        "{EMPHASIS}{}{EMPHASIS:#} {MUTED}· {plan}{MUTED:#}",
+        profile.name
+    )
+    .unwrap();
+    if selected {
+        write!(output, "  {ACCENT}[selected]{ACCENT:#}").unwrap();
+    }
+    writeln!(output).unwrap();
+    let identity = match &profile.account {
+        Account::Chatgpt(_) => profile.label(),
+        Account::Api(account) => &account.base_url,
+    };
+    write!(output, "    {MUTED}{identity}").unwrap();
+    if let Some(recency) = recency {
+        write!(output, " · {recency}").unwrap();
+    }
+    writeln!(output, "{MUTED:#}").unwrap();
+    output
+}
+
+fn profile_output(
+    profile: &Profile,
+    selected: bool,
+    ordinal: Option<usize>,
+    usage: Option<&UsageRecord>,
+    now: i64,
+) -> String {
+    let mut output = profile_header(profile, selected, ordinal, usage, now);
     if let Account::Api(account) = &profile.account {
         if let Some(website) = &account.website {
             writeln!(output, "    Website  {website}").unwrap();

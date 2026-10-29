@@ -109,6 +109,8 @@ cxa personal
 
 名称是唯一的账号标识，不再接受数字编号、完整邮箱或模糊匹配。旧账号首次使用时会保存固定名称：ChatGPT 账号默认取邮箱的 `@` 前部分，API 账号根据已有名称生成；重名时添加 `-2` 等后缀。删除其他账号不会改变名称，凭据文件保留在原目录。
 
+列表显示从 1 开始的连续展示序号，删除账号后重新排列。序号仅用于阅读，切换、删除、改名和模型查询等操作仍只接受名称。
+
 可以将名称改短：
 
 ```sh
@@ -227,18 +229,20 @@ Authorization: Bearer <CPA API key>
 两类账号使用相同的窗口显示布局；CPA 额外显示分配额度的数值：
 
 ```text
-  personal  personal@example.com  Plus · updated just now
+1. personal · Plus
+    personal@example.com · updated just now
     Codex
       5-hour   [████████████████]  100% left  resets in 4h 58m
       Weekly   [████████████████]  100% left  resets in 6d 17h
 
-* company  CPA API key · updated just now
+2. company · CPA API key  [selected]
+    https://cpa.example.com/v1 · updated just now
     Core · USD
       Weekly   [██████████████░░]   90% left  resets in 5d 7h
-               $360.00 / $400.00 left
+      $360.00 / $400.00 left
 ```
 
-`*` 表示当前选中的账号。HTTP 错误、连接错误和响应格式错误会显示为查询失败，不会被当成无限额度。刷新失败时，之前成功取得的数据会明确标为缓存并显示刷新错误。
+`[selected]` 表示 Codex 凭据和连接文件中当前选中的账号，运行中的 Codex 进程仍需在切换后重启。每块标题显示展示序号、唯一名称、套餐或账号类型，下一行显示邮箱或 API 地址及额度更新时间。HTTP 错误、连接错误和响应格式错误会显示为查询失败，不会被当成无限额度。刷新失败时，之前成功取得的数据会明确标为缓存并显示刷新错误。
 
 查询不发送推理请求。结果默认缓存 120 秒；交互终端会并行加载各账号数据，重定向输出则在加载完成后一次性输出。ChatGPT token 刷新由 Codex 负责，`cxa` 校验账号身份后回存到同一个账号，不用其他账号的凭据覆盖它。
 

@@ -162,6 +162,9 @@ their saved label. Collisions receive suffixes such as `-2`. Names do not change
 when another account is removed. Credentials remain in their existing storage
 directories.
 
+List rows show consecutive display positions starting at 1. Positions are
+recomputed after removal and are never accepted by account commands.
+
 Choose a shorter name with:
 
 ```sh
@@ -344,31 +347,37 @@ default.
 
 ```text
 $ cxa list
-* personal  personal@example.com  Pro 20x · updated just now
+1. personal · Pro 20x  [selected]
+    personal@example.com · updated just now
     Codex
       Weekly   [█████████████░░░]   82% left  resets in 6d 11h
     Codex Spark
       5-hour   [█████████░░░░░░░]   59% left  resets in 4h 12m
       Weekly   [███████████████░]   91% left  resets in 6d 23h
 
-  work  work@example.com  Pro 20x · updated just now
+2. work · Pro 20x
+    work@example.com · updated just now
     Codex
       Weekly   [██████░░░░░░░░░░]   37% left  resets in 3d 8h
     Codex Spark
       5-hour   [████████████████]  100% left  resets in 4h 48m
       Weekly   [██████████████░░]   88% left  resets in 5d 17h
 
-  company  CPA API key · updated just now
+3. company · CPA API key
+    https://cpa.example.com/v1 · updated just now
     Core · USD
       Weekly   [██████████████░░]   90% left  resets in 5d 7h
-               $360.00 / $400.00 left
+      $360.00 / $400.00 left
 
 $ cxa work
 ✓ Account work (work@example.com) is now selected.
 ! Restart Codex or ChatGPT before expecting an existing session to use this account.
 ```
 
-The `*` marks the account currently selected in Codex.
+`[selected]` marks the account selected in Codex's credential and connection
+files; running Codex processes still require a restart after switching. Each
+heading shows the display position, unique name, and plan or account type.
+The next line shows the email or API endpoint and the quota update time.
 
 When quota data is stale, an interactive terminal immediately lists every
 account with an animated loading indicator, fetches them in parallel, and fills

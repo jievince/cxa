@@ -929,10 +929,11 @@ done
 
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let account_two = stdout.find("two@example.com").unwrap();
+    let account_two = stdout.find("2. two ·").unwrap();
     let account_one_output = &stdout[..account_two];
     let account_two_output = &stdout[account_two..];
-    assert!(account_one_output.contains("one@example.com  Pro 20x · updated just now"));
+    assert!(account_one_output.contains("1. one · Pro 20x"));
+    assert!(account_one_output.contains("one@example.com · updated just now"));
     assert!(account_one_output.contains("89% left"));
     assert!(!account_one_output.contains("23% left"));
     assert!(account_two_output.contains("23% left"));
@@ -955,7 +956,10 @@ fn status_infers_selection_when_codex_changes_to_an_enrolled_account() {
     let output = case.run(&["status"]);
 
     assert_success(&output);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("* two  two@example.com"));
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("two · ChatGPT  [selected]\n    two@example.com")
+    );
 }
 
 #[test]
@@ -1112,8 +1116,8 @@ esac
     watch.assert_terminal_restored();
     let reserved = watch
         .output
-        .windows(b"\x1b[1A\x1b[s".len())
-        .position(|window| window == b"\x1b[1A\x1b[s")
+        .windows(b"\x1b[3A\x1b[s".len())
+        .position(|window| window == b"\x1b[3A\x1b[s")
         .unwrap_or_else(|| panic!("no reserved origin in {:?}", watch.output));
     let loading = watch
         .output
@@ -1535,7 +1539,9 @@ fn custom_provider_switch_round_trip_preserves_general_settings_and_rotated_oaut
     );
     let output = case.run(&["list"]);
     assert_success(&output);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("* company  CPA API key"));
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("2. company · CPA API key  [selected]")
+    );
 
     // A setting edited during company mode must not be overwritten by the saved route.
     let path = case.codex_home.join("config.toml");
@@ -1742,7 +1748,7 @@ fn generic_gateway_switch_and_status_preserve_oauth_without_querying_quota() {
         let output = process.arg(command).output().unwrap();
         assert_success(&output);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("gateway  API key"));
+        assert!(stdout.contains("gateway · API key  [selected]"));
         assert!(stdout.contains("Website  https://gateway.example.com/usage"));
         assert!(stdout.contains("Quota query disabled (generic API)."));
         assert!(!stdout.contains("CPA allocation"));
@@ -2127,7 +2133,10 @@ fn builtin_openai_switch_keeps_default_provider_and_restores_login() {
         fs::read(case.store.join("profile-1/auth.json")).unwrap(),
         auth
     );
-    assert!(String::from_utf8_lossy(&case.run(&["status"]).stdout).contains("* company"));
+    assert!(
+        String::from_utf8_lossy(&case.run(&["status"]).stdout)
+            .contains("company · CPA API key  [selected]")
+    );
     assert_success(&case.run(&["personal"]));
     assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
     assert!(read_config(&case).get("openai_base_url").is_none());
@@ -2356,11 +2365,13 @@ fn names_replace_numeric_and_partial_selectors_without_changing_live_state() {
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("* jax  jaxonblazers@example.com"),
+        stdout.contains("1. jax · ChatGPT  [selected]\n    jaxonblazers@example.com"),
         "{stdout}"
     );
-    assert!(stdout.contains("  work  company"), "{stdout}");
-    assert!(!stdout.contains("* 1 ") && !stdout.contains("  2 "));
+    assert!(
+        stdout.contains("2. work · CPA API key\n    https://example.com/v1"),
+        "{stdout}"
+    );
     assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
     assert_eq!(
         fs::read(case.codex_home.join("config.toml")).unwrap(),
@@ -2416,6 +2427,53 @@ fn legacy_name_migration_persists_collisions_across_removal_and_enrollment() {
     assert_success(&case.add_api("shared", "https://example.com/v1", "dummy-key"));
     let output = case.add_api("SHARED-2", "https://example.com/v1", "dummy-key");
     assert!(!output.status.success());
+}
+
+#[test]
+fn list_numbers_are_contiguous_after_removal_and_never_select_accounts() {
+    let case = Case::new();
+    case.seed("first@example.com", "first", "first");
+    let second = case.home.join("second.json");
+    write_auth(
+        &second,
+        "second@example.com",
+        "second",
+        "second",
+        "second-token",
+    );
+    assert_success(&case.run(&["import", second.to_str().unwrap()]));
+    assert_success(&case.add_api("company", "https://cpa.example.com/v1", "dummy-key"));
+    assert_success(&case.run(&["use", "second"]));
+    assert_success(&case.run(&["remove", "first", "--yes"]));
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+    let output = case.run(&["list"]);
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let headings: Vec<_> = stdout
+        .lines()
+        .filter(|line| line.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .collect();
+    assert_eq!(
+        headings,
+        [
+            "1. second · ChatGPT  [selected]",
+            "2. company · CPA API key"
+        ]
+    );
+    assert!(case.store.join("profile-2/auth.json").exists());
+    assert!(case.store.join("profile-3/api.json").exists());
+    for arguments in [
+        vec!["1"],
+        vec!["use", "2"],
+        vec!["remove", "1", "--yes"],
+        vec!["rename", "2", "work"],
+    ] {
+        assert!(!case.run(&arguments).status.success());
+    }
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    let status = case.run(&["status"]);
+    assert_success(&status);
+    assert!(String::from_utf8_lossy(&status.stdout).starts_with("second · ChatGPT  [selected]\n"));
 }
 
 #[test]
@@ -2610,7 +2668,7 @@ esac
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("75% left"));
-    assert!(stdout.contains("* company  CPA API key"));
+    assert!(stdout.contains("2. company · CPA API key  [selected]"));
     assert!(stdout.contains("CPA allocation  Unlimited"));
     assert!(!stdout.contains("quota unavailable"));
     assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
