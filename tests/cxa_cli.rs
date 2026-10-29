@@ -1446,7 +1446,7 @@ fn interactive_api_add_identifies_cpa_and_uses_visible_key_input() {
     let output = String::from_utf8_lossy(&enrollment.output);
     assert!(output.contains("API type: CPA API key"));
     assert!(output.contains("GET + Bearer authentication"));
-    assert!(output.contains("the key has not been verified"));
+    assert!(output.contains("The API key has not been verified"));
     assert!(output.contains("secret-interactive-key"));
     assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
     assert_eq!(
@@ -1473,7 +1473,7 @@ fn api_enrollment_preserves_login_and_config_and_hides_the_key() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("API type: CPA API key"));
     assert!(String::from_utf8_lossy(&output.stderr).contains("GET + Bearer authentication"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("(CPA API key)"));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("the key has not been verified"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("The API key has not been verified"));
     assert!(
         String::from_utf8_lossy(&output.stdout)
             .contains("current login and config.toml were not changed")
@@ -1645,7 +1645,17 @@ fn guided_chatgpt_enrollment_selects_login_method_without_changing_live_credenti
         enrollment.send(b"1\n");
         enrollment.wait_for_output(b"Login method [browser/device, Enter=browser]:");
         enrollment.send(format!("{method}\n").as_bytes());
+        enrollment.wait_for_output(b"Account name [two]:");
+        enrollment.send(if method == "browser" {
+            b"work\n"
+        } else {
+            b"\n"
+        });
         enrollment.wait_success();
+        assert_eq!(
+            fs::read_to_string(case.store.join("profile-2/name")).unwrap(),
+            if method == "browser" { "work" } else { "two" }
+        );
         assert_eq!(
             access_token(&case.store.join("profile-2/auth.json")),
             "token-two"
@@ -1830,7 +1840,7 @@ fn guided_enrollment_can_select_cpa_and_skip_the_website() {
 }
 
 #[test]
-fn redirected_api_enrollment_requires_explicit_name_and_base_url() {
+fn redirected_api_enrollment_requires_base_url() {
     let case = Case::new();
     for options in [
         vec!["add", "--type", "api", "--api-key-stdin"],
@@ -1847,10 +1857,181 @@ fn redirected_api_enrollment_requires_explicit_name_and_base_url() {
         assert!(!output.status.success());
         assert!(
             String::from_utf8_lossy(&output.stderr)
-                .contains("Scripted API enrollment requires --name and --base-url")
+                .contains("Scripted API enrollment requires --base-url")
         );
         assert!(!case.store.join("profile-1").exists());
     }
+}
+
+#[test]
+fn optional_names_share_defaults_and_collisions_across_account_types() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+    let fresh = case.home.join("fresh.json");
+    write_auth(
+        &fresh,
+        "gateway.example.com@example.com",
+        "new-user",
+        "new-account",
+        "new-token",
+    );
+    let output = case
+        .command()
+        .env("FAKE_AUTH", &fresh)
+        .args(["add", "--type", "chatgpt", "--name", "work"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        fs::read_to_string(case.store.join("profile-2/name")).unwrap(),
+        "work"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("Added work  gateway.example.com@example.com")
+    );
+
+    for expected in ["gateway.example.com", "gateway.example.com-2"] {
+        let mut child = case
+            .command()
+            .args([
+                "add",
+                "--type",
+                "api",
+                "--base-url",
+                "https://gateway.example.com/v1",
+                "--api-key-stdin",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writeln!(child.stdin.take().unwrap(), "dummy-key").unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert_success(&output);
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains(&format!("Added {expected} (API key)"))
+        );
+    }
+    write_auth(
+        &fresh,
+        "gateway.example.com@another.example",
+        "other-user",
+        "other-account",
+        "other-token",
+    );
+    let output = case
+        .command()
+        .env("FAKE_AUTH", &fresh)
+        .args(["add", "--type", "chatgpt"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        fs::read_to_string(case.store.join("profile-5/name")).unwrap(),
+        "gateway.example.com-3"
+    );
+    for name in ["WORK", "123", "bad name", ""] {
+        let output = case
+            .command()
+            .env("FAKE_AUTH", &fresh)
+            .args(["add", "--type", "chatgpt", "--name", name])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(!case.store.join("profile-6").exists());
+        let output = case.add_api(name, "https://gateway.example.com/v1", "dummy-key");
+        assert!(!output.status.success());
+        assert!(!case.store.join("profile-6").exists());
+    }
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    assert_eq!(
+        fs::read_to_string(case.codex_home.join("config.toml")).unwrap(),
+        PERSONAL_CONFIG
+    );
+}
+
+#[test]
+fn guided_name_prompt_retries_collisions_and_invalid_names_for_both_types() {
+    for kind in ["chatgpt", "api"] {
+        let case = Case::new();
+        case.seed("personal@example.com", "personal", "personal");
+        let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+        let fresh = case.home.join("fresh.json");
+        write_auth(
+            &fresh,
+            "personal@other.example",
+            "new-user",
+            "new-account",
+            "new-token",
+        );
+        let mut command = case.command();
+        command.env("FAKE_AUTH", &fresh);
+        if kind == "chatgpt" {
+            command.args(["add", "--type", kind, "--device-auth"]);
+        } else {
+            command.args([
+                "add",
+                "--type",
+                kind,
+                "--base-url",
+                "https://personal/v1",
+                "--api-type",
+                "generic",
+                "--website",
+                "https://personal/",
+            ]);
+        }
+        let mut enrollment = PtyChild::spawn(command);
+        if kind == "api" {
+            enrollment.wait_for_output(b"API key:");
+            enrollment.send(b"dummy-key\n");
+        }
+        enrollment.wait_for_output(b"Account name [personal-2]:");
+        enrollment.send(b"PERSONAL\n");
+        enrollment.wait_for_output(b"already in use");
+        enrollment.send(b"123\n");
+        enrollment.wait_for_output(b"not be purely numeric");
+        enrollment.send(b"\n");
+        enrollment.wait_success();
+        assert_eq!(
+            fs::read_to_string(case.store.join("profile-2/name")).unwrap(),
+            "personal-2"
+        );
+        assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    }
+}
+
+#[test]
+fn name_option_can_precede_interactive_account_type_selection() {
+    let case = Case::new();
+    let fresh = case.home.join("fresh.json");
+    write_auth(
+        &fresh,
+        "new@example.com",
+        "new-user",
+        "new-account",
+        "new-token",
+    );
+    let mut command = case.command();
+    command
+        .env("FAKE_AUTH", &fresh)
+        .args(["add", "--name", "work"]);
+    let mut enrollment = PtyChild::spawn(command);
+    enrollment.wait_for_output(b"Account type [1/2]:");
+    enrollment.send(b"1\n");
+    enrollment.wait_for_output(b"Login method [browser/device, Enter=browser]:");
+    enrollment.send(b"\n");
+    enrollment.wait_success();
+    assert!(!String::from_utf8_lossy(&enrollment.output).contains("Account name ["));
+    assert_eq!(
+        fs::read_to_string(case.store.join("profile-1/name")).unwrap(),
+        "work"
+    );
 }
 
 #[test]

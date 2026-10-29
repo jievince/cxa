@@ -97,7 +97,7 @@ enum CliCommand {
     /// Enroll a ChatGPT OAuth account or a Responses-compatible API key.
     #[command(
         trailing_var_arg = true,
-        long_about = "Enroll a ChatGPT subscription or a Responses-compatible API gateway.\n\nRun cxa add to choose an account type in the interactive wizard. Use --type chatgpt or --type api to skip the type prompt. Redirected input requires an explicit type (or --device-auth for ChatGPT).\n\nChatGPT enrollment runs Codex login in an isolated home and saves the resulting OAuth credentials without changing your current login. In a terminal, choose browser or device-code login; --device-auth selects device-code login directly. Noninteractive --type chatgpt uses Codex's default browser login flow.\n\nRun cxa add --type api to enter the base URL, API key, optional website, then choose generic/cpa and an account name. These can also be supplied with --base-url, --website, --name, and --api-key-stdin. Scripted API enrollment requires --type api, --base-url, --name, and --api-key-stdin.\n\nNew API accounts default to generic: quota queries are disabled. Select --api-type cpa to query CLIProxyAPI (CPA) quota with GET /v0/resource/plugins/cpa-key-billing/subscription, using the enrolled key as a Bearer token. cxa does not install or load server plugins and does not guess a service type from HTTP failures. All API gateways must support the OpenAI Responses API and /models.\n\nAPI enrollment only saves the key locally: it does not verify the key or change the current login or config.toml. Use cxa use ACCOUNT to check advertised models and switch; use cxa list to show accounts, websites, and supported quota."
+        long_about = "Enroll a ChatGPT subscription or a Responses-compatible API gateway.\n\nRun cxa add to choose an account type in the interactive wizard. Use --type chatgpt or --type api to skip the type prompt. Redirected input requires an explicit type (or --device-auth for ChatGPT).\n\nBoth types accept an optional --name. Without it, the interactive wizard ends with an Account name prompt: press Enter to accept the email local part (ChatGPT) or hostname (API). Noninteractive enrollment uses that default automatically. Generated names receive -2, -3, etc. on collisions; explicit names must be unique across both account types (case-insensitive).\n\nChatGPT enrollment runs Codex login in an isolated home and saves the resulting OAuth credentials without changing your current login. In a terminal, choose browser or device-code login; --device-auth selects device-code login directly. Noninteractive --type chatgpt uses Codex's default browser login flow.\n\nRun cxa add --type api to enter the base URL, API key, optional website, then choose generic/cpa and an account name. These can also be supplied with --base-url, --website, --name, and --api-key-stdin. Scripted API enrollment requires --type api, --base-url, and --api-key-stdin; --name is optional.\n\nNew API accounts default to generic: quota queries are disabled. Select --api-type cpa to query CLIProxyAPI (CPA) quota with GET /v0/resource/plugins/cpa-key-billing/subscription, using the enrolled key as a Bearer token. cxa does not install or load server plugins and does not guess a service type from HTTP failures. All API gateways must support the OpenAI Responses API and /models.\n\nAPI enrollment only saves the key locally: it does not verify the key or change the current login or config.toml. Use cxa use ACCOUNT to check advertised models and switch; use cxa list to show accounts, websites, and supported quota."
     )]
     Add {
         /// Sign in with Codex's device-code flow.
@@ -109,8 +109,8 @@ enum CliCommand {
         /// Service type: generic (default, no quota query) or cpa.
         #[arg(long, value_enum, requires = "kind")]
         api_type: Option<ApiType>,
-        /// Unique name for the API account (letters, digits, dots, underscores, hyphens).
-        #[arg(long, requires = "kind")]
+        /// Optional unique account name; defaults to the email local part or API hostname.
+        #[arg(long)]
         name: Option<String>,
         /// API base URL, e.g. https://gateway.example.com/v1.
         #[arg(long, requires = "kind")]
@@ -196,12 +196,7 @@ pub fn run(cli: Cli, config: Config) -> Result<()> {
                 }
                 app.add_api(name, base_url, website, api_type, api_key_stdin)
             } else {
-                if api_type.is_some()
-                    || name.is_some()
-                    || base_url.is_some()
-                    || website.is_some()
-                    || api_key_stdin
-                {
+                if api_type.is_some() || base_url.is_some() || website.is_some() || api_key_stdin {
                     return Err(Error::Message(
                         "API enrollment options require --type api; no account was saved.".into(),
                     ));
@@ -224,7 +219,7 @@ pub fn run(cli: Cli, config: Config) -> Result<()> {
                 } else {
                     device_auth
                 };
-                app.add(device_auth, &options)
+                app.add(device_auth, &options, name)
             }
         }
         (Some(CliCommand::Import { auth_file }), _) => app.import(&auth_file),
@@ -310,7 +305,7 @@ impl App {
             }
         }
 
-        let profile = self.store.enroll(session_path)?;
+        let profile = self.store.enroll(session_path, None)?;
         println!(
             "{SUCCESS}✓{SUCCESS:#} Imported {EMPHASIS}{}{EMPHASIS:#} as account {ACCENT}{}{ACCENT:#}.",
             profile.label(),
@@ -647,24 +642,47 @@ impl App {
         Ok(())
     }
 
-    fn add(&self, device_auth: bool, options: &[OsString]) -> Result<()> {
+    fn prompt_account_name(
+        &self,
+        name: Option<String>,
+        label: &str,
+        interactive: bool,
+    ) -> Result<String> {
+        if let Some(name) = name {
+            return self.store.enrollment_name(Some(&name), label);
+        }
+        let default = self.store.enrollment_name(None, label)?;
+        if !interactive {
+            return Ok(default);
+        }
+        loop {
+            let entered = prompt_line(&format!("Account name [{default}]: "))?;
+            if entered.is_empty() {
+                return Ok(default);
+            }
+            match self.store.enrollment_name(Some(&entered), label) {
+                Ok(name) => return Ok(name),
+                Err(error) => eprintln!("{WARNING}{error}{WARNING:#}"),
+            }
+        }
+    }
+
+    fn add(&self, device_auth: bool, options: &[OsString], name: Option<String>) -> Result<()> {
         let mut options = options.to_vec();
         if device_auth {
             options.push("--device-auth".into());
         }
         reject_non_oauth(&options)?;
         let _lock = self.locked()?;
+        if let Some(name) = &name {
+            self.store.enrollment_name(Some(name), "")?;
+        }
         let login = StagedLogin::run(&self.store.config, &options)?;
-        let profile = self.store.enroll(&login.auth_path())?;
-        println!(
-            "\n{SUCCESS}✓{SUCCESS:#} Enrolled {EMPHASIS}{}{EMPHASIS:#} as account {ACCENT}{}{ACCENT:#}.",
-            profile.label(),
-            profile.name
-        );
-        println!(
-            "{MUTED}Next:{MUTED:#} switch to it with {ACCENT}cxa use {}{ACCENT:#}",
-            profile.name
-        );
+        let auth = AuthDocument::read(login.auth_path())?;
+        let name =
+            self.prompt_account_name(name, auth.identity.label(), io::stdin().is_terminal())?;
+        let profile = self.store.enroll(&login.auth_path(), Some(&name))?;
+        print_enrollment(&profile);
         Ok(())
     }
 
@@ -704,9 +722,9 @@ impl App {
         from_stdin: bool,
     ) -> Result<()> {
         let interactive = !from_stdin && io::stdin().is_terminal();
-        if !interactive && (name.is_none() || base_url.is_none()) {
+        if !interactive && base_url.is_none() {
             return Err(Error::Message(
-                "Scripted API enrollment requires --name and --base-url; use cxa add --type api in a terminal for interactive enrollment.".into(),
+                "Scripted API enrollment requires --base-url; use cxa add --type api in a terminal for interactive enrollment.".into(),
             ));
         }
         let base_url = match base_url {
@@ -759,39 +777,24 @@ impl App {
                     "Quota queries use the CPA subscription endpoint (GET + Bearer authentication).",
             }
         );
-        let name = match name {
-            Some(name) => name,
-            None => {
-                let default = reqwest::Url::parse(base_url.trim())
-                    .ok()
-                    .and_then(|url| url.host_str().map(str::to_owned))
-                    .unwrap_or_else(|| "api".into());
-                let entered = prompt_line(&format!("Account name [{default}]: "))?;
-                if entered.is_empty() { default } else { entered }
-            }
-        };
-        let account = ApiAccount::new(name, base_url, key, api_type, website)?;
+        let url = reqwest::Url::parse(base_url.trim()).map_err(|_| {
+            Error::Message("API base URL must be an absolute HTTP or HTTPS URL.".into())
+        })?;
+        let hostname = url
+            .host_str()
+            .ok_or_else(|| Error::Message("API base URL must include a hostname.".into()))?
+            .to_owned();
+        let account = ApiAccount::new(hostname.clone(), base_url, key, api_type, website)?;
         let _lock = self.locked()?;
-        let profile = self.store.enroll_api(account)?;
-        println!(
-            "{SUCCESS}✓{SUCCESS:#} Enrolled {EMPHASIS}{}{EMPHASIS:#} as account {ACCENT}{}{ACCENT:#} ({}).",
-            profile.label(),
-            profile.name,
-            api_type.label()
-        );
-        println!(
-            "{MUTED}Saved locally; the key has not been verified. Your current login and config.toml were not changed.{MUTED:#}"
-        );
-        println!(
-            "{MUTED}Next:{MUTED:#} check advertised models and switch with {ACCENT}cxa use {}{ACCENT:#}; show accounts with {ACCENT}cxa list{ACCENT:#}.",
-            profile.name
-        );
+        let name = self.prompt_account_name(name, &hostname, interactive)?;
+        let profile = self.store.enroll_api(account, Some(&name))?;
+        print_enrollment(&profile);
         Ok(())
     }
 
     fn import(&self, auth_file: &Path) -> Result<()> {
         let _lock = self.locked()?;
-        let profile = self.store.enroll(auth_file)?;
+        let profile = self.store.enroll(auth_file, None)?;
         println!(
             "{SUCCESS}✓{SUCCESS:#} Imported {EMPHASIS}{}{EMPHASIS:#} as account {ACCENT}{}{ACCENT:#}.",
             profile.label(),
@@ -1066,6 +1069,25 @@ fn prompt_line(prompt: &str) -> Result<String> {
         ));
     }
     Ok(input.trim().to_owned())
+}
+
+fn print_enrollment(profile: &Profile) {
+    let kind = match &profile.account {
+        Account::Chatgpt(_) => "ChatGPT subscription",
+        Account::Api(account) => account.api_type.label(),
+    };
+    println!(
+        "{SUCCESS}✓{SUCCESS:#} Added {EMPHASIS}{}{EMPHASIS:#} ({kind}).",
+        profile.heading()
+    );
+    if matches!(&profile.account, Account::Api(_)) {
+        println!("{MUTED}The API key has not been verified.{MUTED:#}");
+    }
+    println!("{MUTED}Saved locally. Your current login and config.toml were not changed.{MUTED:#}");
+    println!(
+        "{MUTED}Next:{MUTED:#} switch with {ACCENT}cxa use {}{ACCENT:#}; show accounts with {ACCENT}cxa list{ACCENT:#}.",
+        profile.name
+    );
 }
 
 fn restart_notice() {

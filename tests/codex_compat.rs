@@ -132,6 +132,7 @@ wire_api = "responses"
                     None,
                 )
                 .unwrap(),
+                None,
             )
             .unwrap();
         store.select(profile.slot).unwrap();

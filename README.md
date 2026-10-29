@@ -121,6 +121,24 @@ Redirected input requires an explicit type. Noninteractive `--type chatgpt`
 uses Codex's default browser login flow, unless `--device-auth` is supplied.
 Use `cxa init` to save an existing login without signing in again.
 
+Both ChatGPT and API enrollment accept an optional `--name`:
+
+```sh
+cxa add --type chatgpt --name personal
+```
+
+```sh
+cxa add --type api --name company
+```
+
+Without `--name`, both interactive flows end with an account-name prompt.
+Press Enter to accept the generated name: the email local part for ChatGPT,
+or the API hostname. Noninteractive enrollment accepts the generated name
+automatically. Generated names receive `-2`, `-3`, etc. when needed; explicit
+names must be unique across both types, ignoring case. Invalid or duplicate
+names entered at the prompt can be corrected without repeating login or key
+entry. Adding an account saves it without selecting it.
+
 List your accounts and their latest known quota:
 
 ```sh
@@ -152,7 +170,7 @@ cxa rename personal me
 
 Names must be unique (case-insensitive), contain 1–64 ASCII letters, digits,
 periods, underscores, or hyphens, start with a letter or digit, and cannot be
-entirely numeric. API enrollment uses `--name` or the guided name prompt.
+entirely numeric. Both enrollment types use `--name` or the guided name prompt.
 
 Restart any running Codex or ChatGPT session after switching so it loads the
 new account. `cxa` does not restart those processes automatically. For Desktop,
@@ -204,8 +222,8 @@ Existing CPA profiles created before API types were introduced remain CPA
 accounts; no re-enrollment is needed. `cxa` does not infer service types from
 URL names, HTTP failures, or missing billing endpoints.
 
-For noninteractive enrollment, supply `--name`, `--base-url`, and
-`--api-key-stdin`; `--website` is optional. For example:
+For noninteractive API enrollment, supply `--base-url` and `--api-key-stdin`;
+`--name` and `--website` are optional. For example:
 
 ```sh
 cxa add --type api --name gateway --base-url https://gateway.example.com/v1 --website https://gateway.example.com/dashboard --api-key-stdin < /secure/path/gateway-key.txt
@@ -369,10 +387,11 @@ Keep the dashboard open with `cxa watch`. It refreshes every 60 seconds; use
 | `cxa init` | Import the current Codex login |
 | `cxa add` | Guided enrollment: choose ChatGPT subscription or API gateway |
 | `cxa add --type chatgpt` | Add a ChatGPT subscription; choose browser/device login in a terminal |
+| `cxa add --type chatgpt --name NAME` | Add a ChatGPT subscription with a chosen unique name |
 | `cxa add --type chatgpt --device-auth` | Add a ChatGPT subscription with device-code login |
 | `cxa add --type api` | Guided enrollment with key input and an optional website |
 | `cxa add --type api --api-type cpa` | Guided CPA enrollment with quota queries enabled |
-| `cxa add --type api --name NAME --base-url URL --api-key-stdin` | Add a generic API key supplied on stdin; optionally pass `--website URL` |
+| `cxa add --type api --base-url URL --api-key-stdin` | Add a generic API key supplied on stdin; optionally pass `--name NAME` and `--website URL` |
 | `cxa models <account>` | Query any API account's advertised models without switching |
 | `cxa list` | List accounts and their latest known quota |
 | `cxa watch` | Keep the live quota dashboard open |

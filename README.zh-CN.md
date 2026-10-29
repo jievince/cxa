@@ -65,7 +65,7 @@ cxa init
 cxa add
 ```
 
-选择 ChatGPT 订阅后，再选择浏览器登录或设备码登录。选择 API 中转后，依次输入连接地址、key、可选网站、服务类型和名称。也可以直接指定账号类型，跳过第一步选择：
+选择 ChatGPT 订阅后，再选择浏览器登录或设备码登录。选择 API 中转后，依次输入连接地址、key、可选网站和服务类型。两类流程最后都可以填写可选名称。也可以直接指定账号类型，跳过第一步选择：
 
 ```sh
 cxa add --type chatgpt
@@ -76,6 +76,18 @@ cxa add --type chatgpt
 ```sh
 cxa add --type chatgpt --device-auth
 ```
+
+ChatGPT 订阅和 API 中转都支持可选的 `--name`：
+
+```sh
+cxa add --type chatgpt --name personal
+```
+
+```sh
+cxa add --type api --name company
+```
+
+省略 `--name` 时，两类交互流程最后都会提示填写名称，回车接受默认值：ChatGPT 取邮箱的 `@` 前部分，API 取地址的主机名。非交互添加直接使用默认值。自动生成的名称重名时添加 `-2`、`-3` 等后缀；手动指定的名称必须在所有账号类型之间唯一，不区分大小写。在向导中输入非法或重名名称后可以重新填写，无需重复登录或输入 key。添加只保存账号，不自动切换。
 
 ChatGPT 添加流程调用 `codex login`，在隔离的 Codex home 中完成 OAuth 登录，保存新账号后不会替换当前选中的登录，也不修改真实 `config.toml`。只保存已有登录使用 `cxa init`，无需重新登录。非交互添加订阅时，指定 `--type chatgpt` 使用 Codex 默认浏览器登录，或加 `--device-auth` 使用设备码。查询账号和剩余额度：
 
@@ -103,7 +115,7 @@ cxa personal
 cxa rename jaxonblazers jax
 ```
 
-名称长度为 1–64 个字符，只允许 ASCII 字母、数字、点、下划线和连字符，首字符必须是字母或数字，不能是纯数字。名称不区分大小写且必须唯一。添加 API 账号时通过向导或 `--name` 指定名称。
+名称长度为 1–64 个字符，只允许 ASCII 字母、数字、点、下划线和连字符，首字符必须是字母或数字，不能是纯数字。名称不区分大小写且必须唯一。两类账号都可以通过向导或 `--name` 指定名称。
 
 切换后重启实际使用的 Codex CLI 或 Desktop App Server，再照常启动 Codex。`cxa` 不自动重启进程；重启可能打断正在运行的任务，请先结束这些任务。使用远程开发机时，需要重启的是远端实际承载会话的 App Server，而不只是新建一个聊天窗口。
 
@@ -141,7 +153,7 @@ cxa add --type api --api-type cpa
 
 类型通过 `--api-type generic` 或 `--api-type cpa` 选择，不根据 URL 名称、HTTP 错误或额度接口缺失猜测。旧版本已保存的 CPA 账号继续按 CPA 处理，不需要重新添加。
 
-脚本添加必须提供 `--name`、`--base-url` 和 `--api-key-stdin`，可选提供 `--website`：
+脚本添加 API 账号必须提供 `--base-url` 和 `--api-key-stdin`，可选提供 `--name` 和 `--website`：
 
 ```sh
 cxa add --type api --name gateway --base-url https://gateway.example.com/v1 --website https://gateway.example.com/dashboard --api-key-stdin < /secure/path/gateway-key.txt
@@ -296,6 +308,7 @@ cxa relogin <account>
 | `cxa init` | 保存当前 ChatGPT 登录 |
 | `cxa add` | 统一添加向导，选择 ChatGPT 订阅或 API 中转 |
 | `cxa add --type chatgpt` | 添加 ChatGPT 订阅，交互选择浏览器或设备码登录 |
+| `cxa add --type chatgpt --name NAME` | 添加 ChatGPT 订阅并指定唯一名称 |
 | `cxa add --type chatgpt --device-auth` | 直接使用设备码添加 ChatGPT 订阅 |
 | `cxa add --type api` | 交互式添加普通 API key，可选保存网站地址 |
 | `cxa add --type api --api-type cpa` | 交互式添加 CPA key，启用 CPA 额度查询 |

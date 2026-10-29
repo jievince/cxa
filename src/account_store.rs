@@ -453,7 +453,35 @@ impl Store {
         Ok(highest + 1)
     }
 
-    pub fn enroll(&self, source: &Path) -> Result<Profile> {
+    pub fn enrollment_name(&self, requested: Option<&str>, label: &str) -> Result<String> {
+        let profiles = self.profiles()?;
+        // Only generated names receive suffixes; never silently rename an explicit choice.
+        if let Some(name) = requested {
+            validate_name(name)?;
+            if profiles
+                .iter()
+                .any(|profile| profile.name.eq_ignore_ascii_case(name))
+            {
+                return Err(Error::Message(format!(
+                    "Account name `{name}` is already in use; nothing was changed."
+                )));
+            }
+            return Ok(name.to_owned());
+        }
+        let base = default_name(label);
+        let mut name = base.clone();
+        let mut suffix = 2;
+        while profiles
+            .iter()
+            .any(|profile| profile.name.eq_ignore_ascii_case(&name))
+        {
+            name = format!("{base}-{suffix}");
+            suffix += 1;
+        }
+        Ok(name)
+    }
+
+    pub fn enroll(&self, source: &Path, name: Option<&str>) -> Result<Profile> {
         let auth = AuthDocument::read(source)?;
         if let Some(slot) = self.slot_for_identity(&auth.identity)? {
             return Err(Error::Message(format!(
@@ -462,6 +490,7 @@ impl Store {
                 self.profile(slot)?.name
             )));
         }
+        let name = self.enrollment_name(name, auth.identity.label())?;
         let slot = self.next_slot()?;
         private_dir(&self.config.account_store)?;
         let staging = Builder::new()
@@ -469,6 +498,7 @@ impl Store {
             .tempdir_in(&self.config.account_store)
             .map_err(|error| Error::io(&self.config.account_store, error))?;
         auth.write_to(&staging.path().join("auth.json"))?;
+        atomic_write(&staging.path().join("name"), name.as_bytes(), 0o600)?;
         let profile_dir = self.config.profile_dir(slot);
         fs::rename(staging.path(), &profile_dir).map_err(|error| Error::io(&profile_dir, error))?;
         sync_parent(&profile_dir)?;
@@ -476,17 +506,8 @@ impl Store {
         self.profile(slot)
     }
 
-    pub fn enroll_api(&self, account: ApiAccount) -> Result<Profile> {
-        validate_name(&account.name)?;
-        if self
-            .profiles()?
-            .iter()
-            .any(|profile| profile.name.eq_ignore_ascii_case(&account.name))
-        {
-            return Err(Error::Message(
-                "An account with this name already exists; nothing was changed.".into(),
-            ));
-        }
+    pub fn enroll_api(&self, mut account: ApiAccount, name: Option<&str>) -> Result<Profile> {
+        account.name = self.enrollment_name(name, &account.name)?;
         let slot = self.next_slot()?;
         private_dir(&self.config.account_store)?;
         let staging = Builder::new()
