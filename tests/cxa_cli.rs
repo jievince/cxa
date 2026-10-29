@@ -469,8 +469,8 @@ fn switching_preserves_live_credentials_when_timestamps_tie() {
         "2026-08-28T00:00:00Z",
     );
 
-    assert_success(&case.run(&["two"]));
-    assert_success(&case.run(&["one"]));
+    assert_success(&case.run(&["use", "two"]));
+    assert_success(&case.run(&["use", "one"]));
 
     assert_eq!(
         access_token(&case.codex_home.join("auth.json")),
@@ -495,7 +495,7 @@ fn switching_replaces_the_session_symlink_without_touching_its_old_target() {
     fs::rename(case.codex_home.join("auth.json"), &old_target).unwrap();
     symlink(&old_target, case.codex_home.join("auth.json")).unwrap();
 
-    assert_success(&case.run(&["two"]));
+    assert_success(&case.run(&["use", "two"]));
 
     assert_eq!(
         access_token(&case.codex_home.join("auth.json")),
@@ -1196,7 +1196,7 @@ fn non_file_codex_credentials_are_rejected_before_switching() {
     let output = case
         .command()
         .env("FAKE_CREDENTIAL_STORE", "keyring")
-        .arg("1")
+        .args(["use", "one"])
         .output()
         .unwrap();
 
@@ -1231,7 +1231,7 @@ fn credential_environment_overrides_are_rejected_before_switching() {
     let output = case
         .command()
         .env("CODEX_ACCESS_TOKEN", "external-token")
-        .arg("1")
+        .args(["use", "one"])
         .output()
         .unwrap();
 
@@ -1417,6 +1417,36 @@ fn api_add_help_explains_api_types_and_local_only_enrollment() {
     assert!(help.contains("cxa use ACCOUNT"));
     assert!(help.contains("cxa list"));
     assert!(!case.store.exists());
+}
+
+#[test]
+fn unknown_commands_report_typos_and_bare_account_names_never_switch() {
+    let case = Case::new();
+    case.seed("one@example.com", "user-one", "account-one");
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+    let saved = fs::read(case.store.join("profile-1/auth.json")).unwrap();
+    let output = case.run(&["reanme", "one", "work"]);
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("unrecognized subcommand 'reanme'"),
+        "{error}"
+    );
+    assert!(error.contains("rename"), "{error}");
+    assert!(!error.contains("unexpected argument 'one'"));
+    for command in ["one", "1"] {
+        let output = case.run(&[command]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
+    }
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    assert_eq!(
+        fs::read(case.store.join("profile-1/auth.json")).unwrap(),
+        saved
+    );
+    let output = case.run(&["--help"]);
+    assert_success(&output);
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("[NAME]"));
 }
 
 #[test]
@@ -2044,12 +2074,12 @@ fn successive_api_switches_restore_the_original_oauth_route() {
     let (other_url, other_server) = api_server(&[("200 OK", MODEL_LIST)]);
     assert_success(&case.add_api("company", &company_url, "first-key"));
     assert_success(&case.add_api("other", &other_url, "second-key"));
-    assert_success(&case.run(&["company"]));
+    assert_success(&case.run(&["use", "company"]));
     assert_eq!(
         read_config(&case)["model_providers"]["unicodex"]["name"],
         "company"
     );
-    assert_success(&case.run(&["other"]));
+    assert_success(&case.run(&["use", "other"]));
     assert_eq!(
         read_config(&case)["model_providers"]["unicodex"]["name"],
         "other"
@@ -2060,7 +2090,7 @@ fn successive_api_switches_restore_the_original_oauth_route() {
         read_config(&case)["model_providers"]["unicodex"]["experimental_bearer_token"],
         "second-key"
     );
-    assert_success(&case.run(&["personal"]));
+    assert_success(&case.run(&["use", "personal"]));
     let expected: Value = toml_edit::de::from_str(PERSONAL_CONFIG).unwrap();
     assert_eq!(read_config(&case), expected);
 }
@@ -2114,7 +2144,7 @@ fn builtin_openai_switch_keeps_default_provider_and_restores_login() {
     let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
     let (base_url, server) = api_server(&[("200 OK", MODEL_LIST)]);
     assert_success(&case.add_api("company", &base_url, "company-key"));
-    assert_success(&case.run(&["company"]));
+    assert_success(&case.run(&["use", "company"]));
     server.join().unwrap();
     assert!(read_config(&case).get("model_provider").is_none());
     assert_eq!(
@@ -2131,7 +2161,7 @@ fn builtin_openai_switch_keeps_default_provider_and_restores_login() {
     assert!(
         String::from_utf8_lossy(&case.run(&["status"]).stdout).contains("* company · CPA API key")
     );
-    assert_success(&case.run(&["personal"]));
+    assert_success(&case.run(&["use", "personal"]));
     assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
     assert!(read_config(&case).get("openai_base_url").is_none());
     assert!(read_config(&case).get("model_provider").is_none());
@@ -2144,14 +2174,14 @@ fn connection_edits_outside_cxa_are_reported_without_overwriting_them() {
     fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
     let (base_url, server) = api_server(&[("200 OK", MODEL_LIST)]);
     assert_success(&case.add_api("company", &base_url, "company-key"));
-    assert_success(&case.run(&["company"]));
+    assert_success(&case.run(&["use", "company"]));
     server.join().unwrap();
     let path = case.codex_home.join("config.toml");
     let edited = fs::read_to_string(&path)
         .unwrap()
         .replace(base_url.trim_end_matches('/'), "http://manual.test/v1");
     fs::write(&path, &edited).unwrap();
-    let output = case.run(&["personal"]);
+    let output = case.run(&["use", "personal"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("changed outside cxa"));
     assert_eq!(fs::read_to_string(path).unwrap(), edited);
@@ -2340,7 +2370,7 @@ fn names_replace_numeric_and_partial_selectors_without_changing_live_state() {
     assert_success(&case.run(&["rename", "jaxonblazers", "jax"]));
     assert_success(&case.run(&["rename", "company", "work"]));
     for args in [
-        vec!["1"],
+        vec!["use", "1"],
         vec!["use", "2"],
         vec!["remove", "2", "--yes"],
         vec!["models", "2"],
@@ -2459,7 +2489,7 @@ fn list_numbers_are_contiguous_after_removal_and_never_select_accounts() {
     assert!(case.store.join("profile-2/auth.json").exists());
     assert!(case.store.join("profile-3/api.json").exists());
     for arguments in [
-        vec!["1"],
+        vec!["use", "1"],
         vec!["use", "2"],
         vec!["remove", "1", "--yes"],
         vec!["rename", "2", "work"],
@@ -2515,7 +2545,7 @@ fn model_list_failures_stop_switch_without_echoing_gateway_error_bodies() {
         let (base_url, server) = api_server(&[(status, body)]);
         assert_success(&case.add_api("company", &base_url, "secret-company-key"));
 
-        let output = case.run(&["company"]);
+        let output = case.run(&["use", "company"]);
 
         server.join().unwrap();
         assert!(!output.status.success());
@@ -2544,7 +2574,7 @@ fn unreachable_model_endpoint_stops_switch_without_changing_login_or_config() {
     drop(listener);
     assert_success(&case.add_api("company", &base_url, "secret-company-key"));
 
-    let output = case.run(&["company"]);
+    let output = case.run(&["use", "company"]);
 
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("connection or TLS error"));
@@ -2590,6 +2620,12 @@ fn list_queries_cpa_key_allocation_with_bearer_auth_and_shows_remaining() {
     assert!(stdout.contains("Core · USD"));
     assert!(stdout.contains("Core · Tokens"));
     assert!(stdout.contains("Weekly   ["));
+    let weekly = stdout.lines().find(|line| line.contains("Weekly")).unwrap();
+    let amount = stdout
+        .lines()
+        .find(|line| line.contains("70.00 /"))
+        .unwrap();
+    assert_eq!(weekly.find('['), amount.find(|c: char| !c.is_whitespace()));
     assert!(!stdout.contains("amount_usd"));
     assert!(!stdout.contains("resets at "));
     let cached: serde_json::Value =
@@ -2640,7 +2676,7 @@ fn oauth_quota_uses_personal_route_while_company_is_selected() {
         ("200 OK", r#"{"subscription":{"unlimited":true}}"#),
     ]);
     assert_success(&case.add_api("company", &base_url, "secret-company-key"));
-    assert_success(&case.run(&["company"]));
+    assert_success(&case.run(&["use", "company"]));
     let codex = case.home.join("quota-codex");
     write_executable(
         &codex,

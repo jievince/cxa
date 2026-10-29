@@ -635,7 +635,7 @@ impl Store {
                     .and_then(|slot| self.profile(slot).ok())
                     .map(|profile| format!("account {}", profile.name))
                     .unwrap_or_else(|| session.identity.label().to_owned());
-                format!("{label}; run `cxa {}` to replace it", profile.name)
+                format!("{label}; run `cxa use {}` to replace it", profile.name)
             }
             Err(_) => format!(
                 "missing or invalid at {}",

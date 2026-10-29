@@ -148,11 +148,7 @@ cxa list
 Switch accounts by their exact name (case-insensitive):
 
 ```sh
-cxa personal
-```
-
-```sh
-cxa use work
+cxa use personal
 ```
 
 Names are the only account identifiers: numeric IDs, email addresses, and partial
@@ -367,9 +363,9 @@ $ cxa list
      https://cpa.example.com/v1 · updated just now
      Core · USD
        Weekly   [██████████████░░]   90% left  resets in 5d 7h
-       $360.00 / $400.00 left
+                $360.00 / $400.00 left
 
-$ cxa work
+$ cxa use work
 ✓ Account work (work@example.com) is now selected.
 ! Restart Codex or ChatGPT before expecting an existing session to use this account.
 ```
@@ -382,6 +378,7 @@ The next line shows the email or API endpoint and the quota update time.
 The marker and right-aligned numbers form a separate gutter. Account details
 and quota groups align with the name column; quota rows are indented two more
 spaces. All entries share the same alignment, including lists of 10 or more.
+CPA amounts align under the progress bar, keeping the period label in its own column.
 
 When quota data is stale, an interactive terminal immediately lists every
 account with an animated loading indicator, fetches them in parallel, and fills
@@ -410,8 +407,7 @@ Keep the dashboard open with `cxa watch`. It refreshes every 60 seconds; use
 | `cxa watch` | Keep the live quota dashboard open |
 | `cxa watch --interval 30` | Refresh every 30 seconds |
 | `cxa list --watch` | Open watch mode through `list` |
-| `cxa <account>` | Switch by exact account name (case-insensitive) |
-| `cxa use <account>` | Switch using the explicit command form |
+| `cxa use <account>` | Switch by exact account name (case-insensitive) |
 | `cxa rename <account> <name>` | Change the unique account name |
 | `cxa remove <account>` | Remove a saved account after confirmation |
 | `cxa status` | Show the selected account and credential state |

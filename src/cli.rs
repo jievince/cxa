@@ -34,8 +34,6 @@ use crate::{api_models, connection, cpa};
 pub struct Cli {
     #[command(subcommand)]
     command: Option<CliCommand>,
-    #[arg(value_name = "NAME")]
-    account: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -144,28 +142,25 @@ pub fn run(cli: Cli, config: Config) -> Result<()> {
     }
     require_file_credentials(&config)?;
     let app = App::new(config);
-    match (cli.command, cli.account) {
-        (Some(CliCommand::Init { yes }), _) => app.init(yes),
-        (Some(CliCommand::List { watch, interval }), _) => app.list(watch, interval),
-        (Some(CliCommand::Watch { interval }), _) => app.list(true, interval),
-        (Some(CliCommand::Status), _) | (None, None) => app.status(true),
-        (Some(CliCommand::Use { account }), _) | (None, Some(account)) => app.switch(&account),
-        (Some(CliCommand::Rename { account, name }), _) => app.rename(&account, &name),
-        (Some(CliCommand::Remove { account, yes }), _) => app.remove(&account, yes),
-        (Some(CliCommand::Models { account }), _) => app.models(account.as_deref()),
-        (
-            Some(CliCommand::Add {
-                device_auth,
-                kind,
-                api_type,
-                name,
-                base_url,
-                website,
-                api_key_stdin,
-                options,
-            }),
-            _,
-        ) => {
+    match cli.command {
+        Some(CliCommand::Init { yes }) => app.init(yes),
+        Some(CliCommand::List { watch, interval }) => app.list(watch, interval),
+        Some(CliCommand::Watch { interval }) => app.list(true, interval),
+        Some(CliCommand::Status) | None => app.status(true),
+        Some(CliCommand::Use { account }) => app.switch(&account),
+        Some(CliCommand::Rename { account, name }) => app.rename(&account, &name),
+        Some(CliCommand::Remove { account, yes }) => app.remove(&account, yes),
+        Some(CliCommand::Models { account }) => app.models(account.as_deref()),
+        Some(CliCommand::Add {
+            device_auth,
+            kind,
+            api_type,
+            name,
+            base_url,
+            website,
+            api_key_stdin,
+            options,
+        }) => {
             if options.iter().any(|option| option == "--api-key") {
                 return Err(Error::Message("The account-type flag is now --type api, not --api-key. Use cxa add for the guided flow.".into()));
             }
@@ -223,8 +218,8 @@ pub fn run(cli: Cli, config: Config) -> Result<()> {
                 app.add(device_auth, &options, name)
             }
         }
-        (Some(CliCommand::Import { auth_file }), _) => app.import(&auth_file),
-        (Some(CliCommand::Relogin { account, options }), _) => app.relogin(&account, &options),
+        Some(CliCommand::Import { auth_file }) => app.import(&auth_file),
+        Some(CliCommand::Relogin { account, options }) => app.relogin(&account, &options),
     }
 }
 
@@ -271,7 +266,7 @@ impl App {
                 return Ok(());
             }
             return Err(Error::Message(
-                "cxa has enrolled accounts but none is selected. Run `cxa list`, then `cxa <account>`."
+                "cxa has enrolled accounts but none is selected. Run `cxa list`, then `cxa use NAME`."
                     .into(),
             ));
         }

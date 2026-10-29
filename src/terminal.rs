@@ -19,6 +19,7 @@ pub const EMPHASIS: Style = Style::new().bold();
 pub const MUTED: Style = Style::new().dimmed();
 
 const BAR_WIDTH: usize = 16;
+const WINDOW_LABEL_WIDTH: usize = 8;
 const WATCH_SIGNALS: [libc::c_int; 3] = [libc::SIGHUP, libc::SIGINT, libc::SIGTERM];
 static WATCH_EXIT_SIGNAL: AtomicBool = AtomicBool::new(false);
 
@@ -102,7 +103,8 @@ pub fn render_usage(usage: Option<&UsageRecord>, now: i64, indent: usize) -> Str
             );
             writeln!(
                 output,
-                "{padding}  {style}{}{style:#}",
+                "{}{style}{}{style:#}",
+                " ".repeat(indent + 2 + period.chars().count().max(WINDOW_LABEL_WIDTH) + 1),
                 dimension.amount_label()
             )
             .unwrap();
@@ -448,7 +450,8 @@ fn write_quota_window(
     let padding = " ".repeat(indent + 2);
     writeln!(
         output,
-        "{padding}{MUTED}{label:<8}{MUTED:#} {style}{bar}{style:#} {style}{percent:>4}% left{style:#}{MUTED}  {reset}{MUTED:#}"
+        "{padding}{MUTED}{label:<width$}{MUTED:#} {style}{bar}{style:#} {style}{percent:>4}% left{style:#}{MUTED}  {reset}{MUTED:#}",
+        width = WINDOW_LABEL_WIDTH
     )
     .unwrap();
 }
