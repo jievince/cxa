@@ -1139,6 +1139,9 @@ fn restart_notice() {
     println!(
         "{WARNING}!{WARNING:#} Restart Codex or ChatGPT before expecting an existing session to use this account."
     );
+    println!(
+        "{MUTED}  Codex CLI:{MUTED:#} {ACCENT}codex app-server daemon restart{ACCENT:#}{MUTED}  ·  Desktop: quit and reopen{MUTED:#}"
+    );
 }
 
 fn write_usage_result(
