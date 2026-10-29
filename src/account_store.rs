@@ -6,7 +6,7 @@ use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use tempfile::Builder;
 
-use crate::api_account::ApiAccount;
+use crate::api_account::{ApiAccount, ApiType};
 use crate::auth::{AuthDocument, Identity};
 use crate::config::Config;
 use crate::connection;
@@ -17,6 +17,7 @@ use crate::{Error, Result};
 #[derive(Clone)]
 pub struct Profile {
     pub slot: u32,
+    pub name: String,
     pub account: Account,
 }
 
@@ -27,10 +28,25 @@ pub enum Account {
 }
 
 impl Profile {
+    pub fn supports_usage(&self) -> bool {
+        match &self.account {
+            Account::Chatgpt(_) => true,
+            Account::Api(account) => matches!(account.api_type, ApiType::Cpa),
+        }
+    }
+
     pub fn label(&self) -> &str {
         match &self.account {
             Account::Chatgpt(auth) => auth.identity.label(),
             Account::Api(account) => &account.name,
+        }
+    }
+
+    pub fn heading(&self) -> String {
+        if self.name == self.label() {
+            self.name.clone()
+        } else {
+            format!("{}  {}", self.name, self.label())
         }
     }
 
@@ -304,10 +320,97 @@ impl Store {
             } else {
                 Account::Chatgpt(AuthDocument::read(entry.path().join("auth.json"))?)
             };
-            profiles.push(Profile { slot, account });
+            let name_path = entry.path().join("name");
+            let name = match fs::read_to_string(&name_path) {
+                Ok(name) => {
+                    validate_name(name.trim())?;
+                    name.trim().to_owned()
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(error) => return Err(Error::io(&name_path, error)),
+            };
+            profiles.push(Profile {
+                slot,
+                name,
+                account,
+            });
         }
         profiles.sort_by_key(|profile| profile.slot);
+        let mut names = std::collections::HashSet::new();
+        for profile in &profiles {
+            if !profile.name.is_empty() {
+                validate_name(&profile.name)?;
+                if !names.insert(profile.name.to_ascii_lowercase()) {
+                    return Err(Error::Message(format!(
+                        "Duplicate account name `{}`.",
+                        profile.name
+                    )));
+                }
+            }
+        }
+        for profile in &mut profiles {
+            if profile.name.is_empty() {
+                let base = default_name(profile.label());
+                let mut name = base.clone();
+                let mut suffix = 2;
+                while !names.insert(name.clone()) {
+                    name = format!("{base}-{suffix}");
+                    suffix += 1;
+                }
+                profile.name = name;
+            }
+        }
         Ok(profiles)
+    }
+
+    /// Caller holds the store lock. Persist legacy names before any removal or
+    /// enrollment so deleting a collision never changes another account's name.
+    pub fn ensure_names(&self) -> Result<()> {
+        for profile in self.profiles()? {
+            let path = self.config.profile_dir(profile.slot).join("name");
+            if !path.exists() {
+                let dir = self.config.profile_dir(profile.slot);
+                if !fs::symlink_metadata(&dir)
+                    .map_err(|error| Error::io(&dir, error))?
+                    .file_type()
+                    .is_dir()
+                {
+                    return Err(Error::Message(
+                        "Refusing to name a profile that is not a real directory.".into(),
+                    ));
+                }
+                atomic_write(&path, profile.name.as_bytes(), 0o600)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn profile(&self, slot: u32) -> Result<Profile> {
+        self.profiles()?
+            .into_iter()
+            .find(|profile| profile.slot == slot)
+            .ok_or_else(|| Error::Message("Saved account no longer exists.".into()))
+    }
+
+    pub fn rename(&self, selector: &str, name: &str) -> Result<Profile> {
+        validate_name(name)?;
+        let mut profile = self.resolve(selector)?;
+        if self
+            .profiles()?
+            .iter()
+            .any(|other| other.slot != profile.slot && other.name.eq_ignore_ascii_case(name))
+        {
+            return Err(Error::Message(format!(
+                "Account name `{name}` is already in use; nothing was changed."
+            )));
+        }
+        atomic_write(
+            &self.config.profile_dir(profile.slot).join("name"),
+            name.as_bytes(),
+            0o600,
+        )?;
+        profile.name = name.to_owned();
+        Ok(profile)
     }
 
     pub fn selected(&self) -> Result<Option<u32>> {
@@ -321,25 +424,9 @@ impl Store {
     }
 
     pub fn resolve(&self, selector: &str) -> Result<Profile> {
-        let profiles = self.profiles()?;
-        if let Ok(slot) = selector.parse::<u32>() {
-            return profiles
-                .into_iter()
-                .find(|profile| profile.slot == slot)
-                .ok_or_else(|| Error::Message(format!("No account {slot} is enrolled.")));
-        }
-        let selector = selector.to_ascii_lowercase();
-        let matches: Vec<Profile> = profiles
-            .into_iter()
-            .filter(|profile| profile.label().to_ascii_lowercase().contains(&selector))
-            .collect();
-        match matches.as_slice() {
-            [profile] => Ok(profile.clone()),
-            [] => Err(Error::Message(format!("No account matches `{selector}`."))),
-            _ => Err(Error::Message(format!(
-                "More than one account matches `{selector}`; use its slot number."
-            ))),
-        }
+        self.profiles()?.into_iter()
+            .find(|profile| profile.name.eq_ignore_ascii_case(selector))
+            .ok_or_else(|| Error::Message(format!("No account named `{selector}`. Use `cxa list` to see names; numeric IDs and partial matches are not supported.")))
     }
 
     pub fn slot_for_identity(&self, identity: &Identity) -> Result<Option<u32>> {
@@ -370,8 +457,9 @@ impl Store {
         let auth = AuthDocument::read(source)?;
         if let Some(slot) = self.slot_for_identity(&auth.identity)? {
             return Err(Error::Message(format!(
-                "{} is already enrolled as account {slot}; nothing was changed.",
-                auth.identity.label()
+                "{} is already enrolled as account {}; nothing was changed.",
+                auth.identity.label(),
+                self.profile(slot)?.name
             )));
         }
         let slot = self.next_slot()?;
@@ -384,17 +472,16 @@ impl Store {
         let profile_dir = self.config.profile_dir(slot);
         fs::rename(staging.path(), &profile_dir).map_err(|error| Error::io(&profile_dir, error))?;
         sync_parent(&profile_dir)?;
-        Ok(Profile {
-            slot,
-            account: Account::Chatgpt(AuthDocument::read(self.config.profile_auth(slot))?),
-        })
+        self.ensure_names()?;
+        self.profile(slot)
     }
 
     pub fn enroll_api(&self, account: ApiAccount) -> Result<Profile> {
+        validate_name(&account.name)?;
         if self
             .profiles()?
             .iter()
-            .any(|profile| profile.label().eq_ignore_ascii_case(&account.name))
+            .any(|profile| profile.name.eq_ignore_ascii_case(&account.name))
         {
             return Err(Error::Message(
                 "An account with this name already exists; nothing was changed.".into(),
@@ -407,38 +494,70 @@ impl Store {
             .tempdir_in(&self.config.account_store)
             .map_err(|error| Error::io(&self.config.account_store, error))?;
         account.write(&staging.path().join("api.json"))?;
+        atomic_write(&staging.path().join("name"), account.name.as_bytes(), 0o600)?;
         let profile_dir = self.config.profile_dir(slot);
         fs::rename(staging.path(), &profile_dir).map_err(|error| Error::io(&profile_dir, error))?;
         sync_parent(&profile_dir)?;
-        Ok(Profile {
-            slot,
-            account: Account::Api(account),
-        })
+        self.ensure_names()?;
+        self.profile(slot)
     }
 
     pub fn replace(&self, slot: u32, source: &Path) -> Result<Profile> {
-        let existing = self.resolve(&slot.to_string())?;
+        let existing = self.profile(slot)?;
         let replacement = AuthDocument::read(source)?;
         if !replacement
             .identity
             .same_account(&existing.oauth()?.identity)
         {
             return Err(Error::Message(format!(
-                "Signed in to a different account than account {slot} ({}). Nothing was changed.",
+                "Signed in to a different account than account {} ({}). Nothing was changed.",
+                existing.name,
                 existing.label()
             )));
         }
         atomic_copy(source, &self.config.profile_auth(slot), 0o600)?;
-        Ok(Profile {
-            slot,
-            account: Account::Chatgpt(AuthDocument::read(self.config.profile_auth(slot))?),
-        })
+        self.profile(slot)
     }
 
     pub fn select(&self, slot: u32) -> Result<Profile> {
-        let profile = self.resolve(&slot.to_string())?;
+        let profile = self.profile(slot)?;
         connection::select(&self.config, &profile)?;
         Ok(profile)
+    }
+
+    pub fn check_removable(&self, profile: &Profile) -> Result<()> {
+        let dir = self.config.profile_dir(profile.slot);
+        let session_points_inside = self
+            .config
+            .session_auth
+            .canonicalize()
+            .ok()
+            .zip(dir.canonicalize().ok())
+            .is_some_and(|(session, directory)| session.starts_with(directory));
+        // API mode can leave a copied OAuth bundle in auth.json. Its identity
+        // is not the active account; only a symlink dependency needs protection.
+        if self.selected()? == Some(profile.slot) || session_points_inside {
+            return Err(Error::Message(format!(
+                "Account {} ({}) is selected or still referenced by Codex credentials. Switch to another ChatGPT account before removing it; nothing was removed.",
+                profile.name,
+                profile.label()
+            )));
+        }
+        let metadata = fs::symlink_metadata(&dir).map_err(|error| Error::io(&dir, error))?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(Error::Message(
+                "Refusing to remove a profile that is not a real directory.".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Caller holds the account-store lock throughout confirmation and removal.
+    pub fn remove(&self, profile: &Profile) -> Result<()> {
+        self.check_removable(profile)?;
+        let dir = self.config.profile_dir(profile.slot);
+        fs::remove_dir_all(&dir).map_err(|error| Error::io(&dir, error))?;
+        sync_parent(&dir)
     }
 
     pub fn usage(&self, slot: u32) -> Option<UsageRecord> {
@@ -455,9 +574,10 @@ impl Store {
         let selected = self
             .selected()?
             .ok_or_else(|| Error::Message("No Codex account is selected.".into()))?;
-        let profile = self.resolve(&selected.to_string())?;
+        let profile = self.profile(selected)?;
         let mut lines = vec![format!(
-            "Selected Codex account: {selected}  {}",
+            "Selected Codex account: {}  {}",
+            profile.name,
             profile.label()
         )];
         lines.push(format!(
@@ -474,7 +594,7 @@ impl Store {
     }
 
     pub fn credential_status(&self, selected: u32) -> Result<String> {
-        let profile = self.resolve(&selected.to_string())?;
+        let profile = self.profile(selected)?;
         if let Account::Api(_) = &profile.account {
             return Ok(
                 if connection::active_api_slot(&self.config)? == Some(selected) {
@@ -491,9 +611,10 @@ impl Store {
             Ok(session) => {
                 let label = self
                     .slot_for_identity(&session.identity)?
-                    .map(|slot| format!("account {slot}"))
+                    .and_then(|slot| self.profile(slot).ok())
+                    .map(|profile| format!("account {}", profile.name))
                     .unwrap_or_else(|| session.identity.label().to_owned());
-                format!("{label}; run `cxa {selected}` to replace it")
+                format!("{label}; run `cxa {}` to replace it", profile.name)
             }
             Err(_) => format!(
                 "missing or invalid at {}",
@@ -506,6 +627,45 @@ impl Store {
 
 fn profile_slot(name: &str) -> Option<u32> {
     name.strip_prefix("profile-")?.parse().ok()
+}
+
+fn validate_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+        || !name.as_bytes()[0].is_ascii_alphanumeric()
+        || name.bytes().all(|c| c.is_ascii_digit())
+    {
+        return Err(Error::Message("Account names must be 1–64 ASCII letters, digits, dots, hyphens or underscores, start with a letter or digit, and not be purely numeric.".into()));
+    }
+    Ok(())
+}
+
+fn default_name(label: &str) -> String {
+    let base = label
+        .split('@')
+        .next()
+        .unwrap_or(label)
+        .to_ascii_lowercase();
+    let name: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "._-".contains(c) {
+                c
+            } else {
+                '-'
+            }
+        })
+        .take(48)
+        .collect();
+    let name = name.trim_matches(['.', '_', '-']);
+    if name.is_empty() || name.bytes().all(|c| c.is_ascii_digit()) {
+        format!("account-{name}")
+    } else {
+        name.to_owned()
+    }
 }
 
 pub fn now_epoch() -> i64 {

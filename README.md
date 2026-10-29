@@ -5,19 +5,19 @@
 
 English | [简体中文](README.zh-CN.md)
 
-`cxa` switches between multiple ChatGPT subscription accounts and CLIProxyAPI
-(CPA) API-key accounts in Codex, and shows their remaining quota. These are the
-two supported account types; arbitrary API-key services are not supported.
-CPA quota queries use the `cpa-key-billing` subscription endpoint.
+`cxa` switches between multiple ChatGPT subscription accounts and
+Responses-compatible API-key gateways in Codex. ChatGPT and CLIProxyAPI (CPA)
+accounts support quota queries. Generic API accounts skip quota queries and can
+show a service website for checking usage manually.
 
-This is a fork of [jesse-merhi/cxa](https://github.com/jesse-merhi/cxa), with CPA
+This is a fork of [jesse-merhi/cxa](https://github.com/jesse-merhi/cxa), with API-key
 account switching, model checks, and a unified remaining-quota display. Install
 from **this fork** to use these features; upstream binaries and the upstream
-Homebrew tap do not contain this fork's CPA implementation.
+Homebrew tap do not contain this fork's API-key implementation.
 
 Use the same Codex home and `model_provider` with Codex CLI and Desktop. No
 launcher wrapper or `--profile` is needed. ChatGPT-to-ChatGPT switches change
-credentials only; CPA switches also update the connection settings described
+credentials only; API-key switches also update the connection settings described
 in [How it works](#how-it-works), without replacing the rest of `config.toml`.
 
 ## Demo
@@ -31,10 +31,10 @@ https://github.com/user-attachments/assets/25842439-7304-480a-a0b0-21b9e4c7d18b
 
 - The [Codex CLI](https://developers.openai.com/codex/cli) installed and
   available as `codex`
-- A ChatGPT OAuth login and/or a CLIProxyAPI (CPA) API key
-- For CPA: an OpenAI-compatible Responses API and `/models`; quota queries
-  additionally require the service's subscription endpoint documented below
-- CPA switching supports built-in `openai` or an already configured custom
+- A ChatGPT OAuth login and/or a Responses-compatible gateway API key
+- For API keys: an OpenAI-compatible Responses API and `/models`; CPA quota
+  queries additionally require the service's subscription endpoint documented below
+- API-key switching supports built-in `openai` or an already configured custom
   provider; `ollama`, `lmstudio`, and `amazon-bedrock` are not converted
 - macOS or Linux
 - A current stable Rust toolchain with `cargo` to install this fork from source
@@ -77,7 +77,7 @@ cargo install --locked --path . --bin cxa
 ```
 
 These commands install the executable; they do not sign out, select an account,
-or replace existing profiles. This fork's CPA build is distributed from source;
+or replace existing profiles. This fork's API-key build is distributed from source;
 do not use an upstream release archive to install the features documented here.
 Windows is not currently supported.
 
@@ -93,11 +93,33 @@ If Codex is not signed in yet, run `codex login` first. Codex uses the file
 credential store by default; the [credential storage](#credential-storage)
 section covers custom configurations.
 
-Add another account. `cxa` will open the normal Codex login flow:
+Add another account with the unified wizard. Choose a ChatGPT subscription or
+an API gateway:
 
 ```sh
 cxa add
 ```
+
+For ChatGPT, choose browser or device-code login. cxa runs `codex login` in an
+isolated home and saves the OAuth credentials without changing your current
+login or real `config.toml`. For an API gateway, enter the base URL,
+key, optional website, service type, and account name.
+
+Skip the account-type prompt with an explicit type:
+
+```sh
+cxa add --type chatgpt
+```
+
+On a headless machine, select device-code login directly:
+
+```sh
+cxa add --type chatgpt --device-auth
+```
+
+Redirected input requires an explicit type. Noninteractive `--type chatgpt`
+uses Codex's default browser login flow, unless `--device-auth` is supplied.
+Use `cxa init` to save an existing login without signing in again.
 
 List your accounts and their latest known quota:
 
@@ -105,30 +127,100 @@ List your accounts and their latest known quota:
 cxa list
 ```
 
-Switch accounts by number or by a unique part of the email address:
+Switch accounts by their exact name (case-insensitive):
 
 ```sh
-cxa 2
+cxa personal
 ```
 
 ```sh
-cxa use work@example.com
+cxa use work
 ```
+
+Names are the only account identifiers: numeric IDs, email addresses, and partial
+matches are not accepted. Existing accounts receive persistent names on first
+use: ChatGPT names default to the email local part, and API names derive from
+their saved label. Collisions receive suffixes such as `-2`. Names do not change
+when another account is removed. Credentials remain in their existing storage
+directories.
+
+Choose a shorter name with:
+
+```sh
+cxa rename personal me
+```
+
+Names must be unique (case-insensitive), contain 1–64 ASCII letters, digits,
+periods, underscores, or hyphens, start with a letter or digit, and cannot be
+entirely numeric. API enrollment uses `--name` or the guided name prompt.
 
 Restart any running Codex or ChatGPT session after switching so it loads the
 new account. `cxa` does not restart those processes automatically. For Desktop,
 this includes the app-server on a remote development machine when one is used.
 
-### Add a CLIProxyAPI (CPA) API-key account
+### Remove an account
+
+ChatGPT subscriptions and API gateways use the same command and exact names:
+
+```sh
+cxa remove work
+```
+
+After confirmation, this deletes the account's saved cxa credentials and quota
+cache. It does not delete Codex sessions, change the current login/config, or
+revoke server tokens or API keys. Re-adding requires login, credential import,
+or the API key. Other accounts keep their names.
+
+Selected accounts and accounts still referenced by Codex's credential file
+cannot be removed. Switch to another ChatGPT account first. Scripted removal
+requires explicit confirmation bypass:
+
+```sh
+cxa remove work --yes
+```
+
+### Add an API-key account
+
+For guided enrollment, run:
+
+```sh
+cxa add --type api
+```
+
+Enter the API base URL, API key, and optional service website in that order,
+then choose `generic` or `cpa` and an account name. Press Enter to select
+`generic`; the name defaults to the API host. Key input is visible in the
+terminal; keep screenshots and terminal recordings private. The website is
+shown in `cxa status` and `cxa list` and is never visited automatically.
+
+New accounts default to `generic`, which never queries quota or probes a CPA
+billing endpoint. To explicitly select CPA and enable its quota queries, run:
+
+```sh
+cxa add --type api --api-type cpa
+```
+
+Existing CPA profiles created before API types were introduced remain CPA
+accounts; no re-enrollment is needed. `cxa` does not infer service types from
+URL names, HTTP failures, or missing billing endpoints.
+
+For noninteractive enrollment, supply `--name`, `--base-url`, and
+`--api-key-stdin`; `--website` is optional. For example:
+
+```sh
+cxa add --type api --name gateway --base-url https://gateway.example.com/v1 --website https://gateway.example.com/dashboard --api-key-stdin < /secure/path/gateway-key.txt
+```
+
+### CPA enrollment example
 
 If Codex is already signed in with ChatGPT, enroll that login with `cxa init`
 before switching, so its credentials are preserved. Then add a CPA account:
 
 ```sh
-cxa add --api-key --name company --base-url https://cpa.example.com/v1
+cxa add --type api --api-type cpa --name company --base-url https://cpa.example.com/v1
 ```
 
-Enter the CPA key at the hidden prompt. `company` is an arbitrary display name
+Enter the CPA key at the prompt, then optionally enter a website. `company` is an arbitrary display name
 and the URL above is an example: use your CPA service's actual API URL.
 For scripts, add `--api-key-stdin` and supply the key on stdin; do not put the
 secret in command arguments.
@@ -136,13 +228,13 @@ secret in command arguments.
 For example, read a private key file into stdin:
 
 ```sh
-cxa add --api-key --name company --base-url https://cpa.example.com/v1 --api-key-stdin < /secure/path/cpa-key.txt
+cxa add --type api --api-type cpa --name company --base-url https://cpa.example.com/v1 --api-key-stdin < /secure/path/cpa-key.txt
 ```
 
 The path is an example. Keep the file private and do not commit it.
 
-This workflow supports CPA keys only, not arbitrary third-party API keys. CPA
-must expose the OpenAI Responses API and `/models`. To show quota, the service
+All API gateways must expose the OpenAI Responses API and `/models`; a
+Chat Completions-only service is not sufficient. For CPA quota, the service
 must also expose `GET /v0/resource/plugins/cpa-key-billing/subscription` with
 Bearer authentication. This is a server-side API contract, not a client plugin
 dependency. `cxa` does not install or load server plugins; it only requests
@@ -155,7 +247,7 @@ encryption, even when the service is on a private network.
 Adding an account only validates the local input and saves the key with mode
 `0600` in `~/.codex-auth/profile-N/api.json`. It does not test authentication,
 switch accounts, or modify the current login or `config.toml`. `cxa use` checks
-advertised models and switches the connection; `cxa list` queries quota. Neither
+advertised models and switches the connection; `cxa list` queries quota only for ChatGPT and CPA accounts. Neither
 the model-list check nor a quota read proves inference compatibility.
 
 The daily commands stay the same:
@@ -169,7 +261,7 @@ cxa use company
 ```
 
 ```sh
-cxa use personal@example.com
+cxa use personal
 ```
 
 Restart the running Codex CLI or Desktop app-server after switching. Launch
@@ -234,27 +326,27 @@ default.
 
 ```text
 $ cxa list
-* 1  personal@example.com  Pro 20x · updated just now
+* personal  personal@example.com  Pro 20x · updated just now
     Codex
       Weekly   [█████████████░░░]   82% left  resets in 6d 11h
     Codex Spark
       5-hour   [█████████░░░░░░░]   59% left  resets in 4h 12m
       Weekly   [███████████████░]   91% left  resets in 6d 23h
 
-  2  work@example.com  Pro 20x · updated just now
+  work  work@example.com  Pro 20x · updated just now
     Codex
       Weekly   [██████░░░░░░░░░░]   37% left  resets in 3d 8h
     Codex Spark
       5-hour   [████████████████]  100% left  resets in 4h 48m
       Weekly   [██████████████░░]   88% left  resets in 5d 17h
 
-  3  company  CPA API key · updated just now
+  company  CPA API key · updated just now
     Core · USD
       Weekly   [██████████████░░]   90% left  resets in 5d 7h
                $360.00 / $400.00 left
 
-$ cxa 2
-✓ Account 2 (work@example.com) is now selected.
+$ cxa work
+✓ Account work (work@example.com) is now selected.
 ! Restart Codex or ChatGPT before expecting an existing session to use this account.
 ```
 
@@ -274,18 +366,22 @@ Keep the dashboard open with `cxa watch`. It refreshes every 60 seconds; use
 | Command | Description |
 | --- | --- |
 | `cxa` | Show the selected account and credential state |
-| `cxa init` | Import the current Codex login as account 1 |
-| `cxa add` | Sign in and add another account |
-| `cxa add --device-auth` | Add an account with Codex's device-code flow |
-| `cxa add --api-key --name NAME --base-url URL` | Add a CPA API key using a hidden prompt |
-| `cxa add --api-key --name NAME --base-url URL --api-key-stdin` | Add a CPA API key supplied on stdin |
-| `cxa models <account>` | Query a CPA account's advertised models without switching |
+| `cxa init` | Import the current Codex login |
+| `cxa add` | Guided enrollment: choose ChatGPT subscription or API gateway |
+| `cxa add --type chatgpt` | Add a ChatGPT subscription; choose browser/device login in a terminal |
+| `cxa add --type chatgpt --device-auth` | Add a ChatGPT subscription with device-code login |
+| `cxa add --type api` | Guided enrollment with key input and an optional website |
+| `cxa add --type api --api-type cpa` | Guided CPA enrollment with quota queries enabled |
+| `cxa add --type api --name NAME --base-url URL --api-key-stdin` | Add a generic API key supplied on stdin; optionally pass `--website URL` |
+| `cxa models <account>` | Query any API account's advertised models without switching |
 | `cxa list` | List accounts and their latest known quota |
 | `cxa watch` | Keep the live quota dashboard open |
 | `cxa watch --interval 30` | Refresh every 30 seconds |
 | `cxa list --watch` | Open watch mode through `list` |
-| `cxa <account>` | Switch by account number, email, or API account name |
+| `cxa <account>` | Switch by exact account name (case-insensitive) |
 | `cxa use <account>` | Switch using the explicit command form |
+| `cxa rename <account> <name>` | Change the unique account name |
+| `cxa remove <account>` | Remove a saved account after confirmation |
 | `cxa status` | Show the selected account and credential state |
 | `cxa relogin <account>` | Re-authenticate a saved account |
 | `cxa import <auth.json>` | Import an existing Codex credential file |
@@ -298,15 +394,22 @@ Each account is stored as a profile under `~/.codex-auth`. Existing OAuth
 profiles keep their original `auth.json` format. API profiles use `api.json`.
 Secrets and connection recovery files are written with mode `0600`.
 
-When a ChatGPT connection is already active, switching between ChatGPT accounts
-atomically replaces `$CODEX_HOME/auth.json`; it does not edit the config.
+Selecting a ChatGPT account atomically installs its saved OAuth credentials
+and explicitly selects the official connection, even if the previous config
+pointed at an unmanaged relay. The existing provider ID is never changed.
 
 For an API account using a custom provider, `cxa` keeps the provider ID and
-edits only that provider's `base_url`, `wire_api`, `requires_openai_auth`,
+edits only that provider's `name`, `base_url`, `wire_api`, `requires_openai_auth`,
 `experimental_bearer_token`, `env_key`, and `auth` settings. The gateway key
 is stored in `experimental_bearer_token`, so Desktop can load it without a
-shell environment. The live OAuth credential file is left in place. Returning
-to ChatGPT restores these settings and selects the saved OAuth credentials.
+shell environment. The provider name is the enrolled API account name,
+and `requires_openai_auth` is false. The live OAuth credential file is left
+in place. Selecting ChatGPT sets `name = "OpenAI"`, `wire_api = "responses"`,
+and `requires_openai_auth = true`, and removes `base_url`, `env_key`,
+`experimental_bearer_token`, and `auth`. It also removes a stale top-level
+`openai_base_url`, so the subscription uses the official default endpoint.
+Old connection snapshots are not restored. Isolated ChatGPT login and quota
+queries use this same official connection without changing the live config.
 Models, reasoning settings, MCP servers, projects, unrelated provider tuning,
 and TOML comments remain in the live config; edits to those settings while
 using the API account are retained.
@@ -314,7 +417,8 @@ using the API account are retained.
 For the built-in `openai` provider, `cxa` changes only `openai_base_url` in the
 config and installs API-key credentials in `auth.json`. The current OAuth
 login must be enrolled first, and its latest credentials are saved before the
-switch. Returning to ChatGPT restores the original URL and saved credentials.
+switch. Selecting ChatGPT removes `openai_base_url` and installs its saved
+OAuth credentials, rather than restoring a possibly stale relay URL.
 No custom provider is created.
 
 Multi-file switches have a private recovery journal. Failed or interrupted
@@ -337,11 +441,11 @@ Account identity includes the ChatGPT user ID and, when available, the
 workspace ID. Accounts and workspaces that share an email address remain
 distinct.
 
-For API accounts, `cxa` uses the saved key to query
+For CPA accounts, `cxa` uses the saved key to query
 `/v0/resource/plugins/cpa-key-billing/subscription`. It removes a trailing
 `/v1` from the base URL while retaining any reverse-proxy path prefix. It does
-not follow HTTP redirects. Supported API-key accounts are limited to CPA;
-other API-key services have no supported quota or switching adapter.
+not follow HTTP redirects. Generic API accounts use the same switching
+mechanism but never query quota. Optional service websites are display-only.
 API accounts do not use OAuth `cxa relogin`.
 
 The key remains in its `api.json` profile. While a custom-provider API account

@@ -7,21 +7,53 @@ use serde::{Deserialize, Serialize};
 use crate::fs::atomic_write;
 use crate::{Error, Result};
 
-/// Credentials for CPA's OpenAI-compatible API, independent of ChatGPT OAuth.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiType {
+    Generic,
+    // Profiles written before API types existed are CPA accounts.
+    #[default]
+    Cpa,
+}
+
+impl ApiType {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Generic => "API key",
+            Self::Cpa => "CPA API key",
+        }
+    }
+}
+
+/// Credentials for a Responses-compatible API, independent of ChatGPT OAuth.
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiAccount {
     pub name: String,
     pub base_url: String,
     pub api_key: String,
+    #[serde(default)]
+    pub api_type: ApiType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub website: Option<String>,
 }
 
 impl ApiAccount {
-    pub fn new(name: String, base_url: String, api_key: String) -> Result<Self> {
+    pub fn new(
+        name: String,
+        base_url: String,
+        api_key: String,
+        api_type: ApiType,
+        website: Option<String>,
+    ) -> Result<Self> {
         let account = Self {
             name: name.trim().to_owned(),
             base_url: base_url.trim().trim_end_matches('/').to_owned(),
             api_key: api_key.trim().to_owned(),
+            api_type,
+            website: website
+                .map(|url| url.trim().to_owned())
+                .filter(|url| !url.is_empty()),
         };
         account.validate()?;
         Ok(account)
@@ -51,6 +83,22 @@ impl ApiAccount {
             return Err(Error::Message(
                 "API key must be nonempty and contain no control characters.".into(),
             ));
+        }
+        if let Some(website) = &self.website {
+            let url = Url::parse(website).map_err(|_| {
+                Error::Message("Website must be an absolute HTTP or HTTPS URL.".into())
+            })?;
+            if !matches!(url.scheme(), "http" | "https")
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || website.chars().any(char::is_control)
+            {
+                return Err(Error::Message(
+                    "Website must use HTTP(S) with no embedded credentials or control characters."
+                        .into(),
+                ));
+            }
         }
         Ok(())
     }

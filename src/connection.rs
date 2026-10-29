@@ -9,7 +9,7 @@ use crate::account_store::{Account, Profile, Store};
 use crate::api_account::ApiAccount;
 use crate::auth::AuthDocument;
 use crate::config::Config;
-use crate::fs::{atomic_copy, atomic_write, remove_file_if_exists, sync_parent};
+use crate::fs::{atomic_write, remove_file_if_exists, sync_parent};
 use crate::{Error, Result};
 
 // Only these connection settings belong to cxa. Other configuration remains live.
@@ -25,7 +25,6 @@ const PROVIDER_KEYS: [&str; 6] = [
 #[derive(Deserialize, Serialize)]
 struct ConnectionState {
     provider: String,
-    oauth: String,
     api: Option<AppliedApi>,
 }
 
@@ -33,6 +32,8 @@ struct ConnectionState {
 struct AppliedApi {
     slot: u32,
     settings: String,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -125,32 +126,31 @@ fn capture(document: &DocumentMut, provider: &str) -> DocumentMut {
     snapshot
 }
 
-fn restore(document: &mut DocumentMut, provider: &str, snapshot: &DocumentMut) -> Result<()> {
-    if provider == "openai" {
-        document.remove("openai_base_url");
-        if let Some(item) = snapshot.get("openai_base_url") {
-            document["openai_base_url"] = item.clone();
-        }
-    } else {
+fn use_official_oauth(document: &mut DocumentMut, provider: &str) -> Result<()> {
+    if matches!(provider, "ollama" | "lmstudio" | "amazon-bedrock") {
+        return Err(Error::Message(
+            "This built-in provider cannot use ChatGPT without changing model_provider.".into(),
+        ));
+    }
+    if provider != "openai" {
         let table = document
             .get_mut("model_providers")
-            .and_then(|item| item.get_mut(provider))
-            .and_then(|item| item.as_table_like_mut())
+            .and_then(|tables| tables.get_mut(provider))
+            .and_then(Item::as_table_like_mut)
             .ok_or_else(|| {
                 Error::Message(
                     "The existing model provider table is missing; nothing was changed.".into(),
                 )
             })?;
-        let source = snapshot
-            .get("model_providers")
-            .and_then(|item| item.get(provider));
         for key in PROVIDER_KEYS {
             table.remove(key);
-            if let Some(item) = source.and_then(|item| item.get(key)) {
-                table.insert(key, item.clone());
-            }
         }
+        table.insert("name", value("OpenAI"));
+        table.insert("wire_api", value("responses"));
+        table.insert("requires_openai_auth", value(true));
     }
+    // A stale built-in override must not route subscription traffic to a relay.
+    document.remove("openai_base_url");
     Ok(())
 }
 
@@ -168,6 +168,19 @@ fn check_active(config: &Config, document: &DocumentMut, state: &ConnectionState
             != semantic_settings(&api.settings)?
     {
         return Err(Error::Message("Codex connection settings changed outside cxa. Restore the selected API connection before switching; nothing was changed.".into()));
+    }
+    if let Some(name) = &api.name {
+        if document
+            .get("model_providers")
+            .and_then(|tables| tables.get(&state.provider))
+            .and_then(|table| table.get("name"))
+            .and_then(Item::as_str)
+            != Some(name)
+        {
+            return Err(Error::Message(
+                "Codex provider name changed outside cxa; nothing was changed.".into(),
+            ));
+        }
     }
     if state.provider == "openai" {
         let account = ApiAccount::read(&config.profile_dir(api.slot).join("api.json"))?;
@@ -197,34 +210,17 @@ pub fn active_api_slot(config: &Config) -> Result<Option<u32>> {
 
 /// Build an OAuth-only config for isolated login/quota processes, even in API mode.
 pub fn copy_oauth_config(config: &Config, destination: &Path) -> Result<()> {
-    let source = config.codex_home.join("config.toml");
-    let Some(state) = read_state(config)?.filter(|state| state.api.is_some()) else {
-        if source.is_file() {
-            atomic_copy(&source, destination, 0o600)?;
-        }
-        return Ok(());
-    };
     let mut document = read_document(config)?;
-    check_active(config, &document, &state)?;
-    restore(
-        &mut document,
-        &state.provider,
-        &parse_document(&state.oauth)?,
-    )?;
+    if let Some(state) = read_state(config)? {
+        check_active(config, &document, &state)?;
+    }
+    let provider = provider_id(&document)?;
+    use_official_oauth(&mut document, &provider)?;
     atomic_write(destination, document.to_string().as_bytes(), 0o600)
 }
 
 pub fn select(config: &Config, profile: &Profile) -> Result<()> {
     let existing = read_state(config)?;
-    if existing.as_ref().is_none_or(|state| state.api.is_none())
-        && matches!(profile.account, Account::Chatgpt(_))
-    {
-        return atomic_copy(
-            &config.profile_auth(profile.slot),
-            &config.session_auth,
-            0o600,
-        );
-    }
     let mut document = read_document(config)?;
     let provider = provider_id(&document)?;
     if let Some(state) = &existing {
@@ -234,16 +230,11 @@ pub fn select(config: &Config, profile: &Profile) -> Result<()> {
         .filter(|state| state.api.is_some())
         .unwrap_or_else(|| ConnectionState {
             provider: provider.clone(),
-            oauth: capture(&document, &provider).to_string(),
             api: None,
         });
     let auth = match &profile.account {
         Account::Chatgpt(_) => {
-            restore(
-                &mut document,
-                &state.provider,
-                &parse_document(&state.oauth)?,
-            )?;
+            use_official_oauth(&mut document, &provider)?;
             state.api = None;
             Some(
                 fs::read(config.profile_auth(profile.slot))
@@ -264,7 +255,7 @@ pub fn select(config: &Config, profile: &Profile) -> Result<()> {
                 document["openai_base_url"] = value(&account.base_url);
             } else {
                 if matches!(provider.as_str(), "ollama" | "lmstudio" | "amazon-bedrock") {
-                    return Err(Error::Message("This built-in provider cannot use a CPA API key without changing model_provider.".into()));
+                    return Err(Error::Message("This built-in provider cannot use an API key without changing model_provider.".into()));
                 }
                 let table = document
                     .get_mut("model_providers")
@@ -278,6 +269,7 @@ pub fn select(config: &Config, profile: &Profile) -> Result<()> {
                     })?;
                 table.remove("env_key");
                 table.remove("auth");
+                table.insert("name", value(&account.name));
                 table.insert("base_url", value(&account.base_url));
                 table.insert("wire_api", value("responses"));
                 table.insert("requires_openai_auth", value(false));
@@ -286,6 +278,7 @@ pub fn select(config: &Config, profile: &Profile) -> Result<()> {
             state.api = Some(AppliedApi {
                 slot: profile.slot,
                 settings: capture(&document, &provider).to_string(),
+                name: (provider != "openai").then(|| account.name.clone()),
             });
             (provider == "openai").then(|| {
                 serde_json::to_vec(&serde_json::json!({

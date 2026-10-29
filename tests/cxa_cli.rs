@@ -211,6 +211,9 @@ case "$*" in
   ;;
 esac
 if [ "$1" = login ] && [ -n "$FAKE_AUTH" ]; then
+  if [ -n "$FAKE_LOGIN_CONFIG" ]; then
+    cp "$CODEX_HOME/config.toml" "$FAKE_LOGIN_CONFIG"
+  fi
   if [ -n "$FAKE_LOGIN_ARGS" ]; then
     printf '%s\n' "$@" > "$FAKE_LOGIN_ARGS"
   fi
@@ -261,17 +264,29 @@ exit 1
     }
 
     fn add_api(&self, name: &str, base_url: &str, key: &str) -> Output {
+        self.add_api_with_options(name, base_url, key, &["--api-type", "cpa"])
+    }
+
+    fn add_api_with_options(
+        &self,
+        name: &str,
+        base_url: &str,
+        key: &str,
+        options: &[&str],
+    ) -> Output {
         let mut child = self
             .command()
             .args([
                 "add",
-                "--api-key",
+                "--type",
+                "api",
                 "--name",
                 name,
                 "--base-url",
                 base_url,
                 "--api-key-stdin",
             ])
+            .args(options)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -424,7 +439,7 @@ fn switch_works_while_codex_is_running_and_prints_restart_guidance() {
     assert_success(&case.run(&["import", imported.to_str().unwrap()]));
     let (_codex, mut child) = sleeping_codex(&case);
 
-    let output = case.run(&["use", "2"]);
+    let output = case.run(&["use", "two"]);
     let _ = child.kill();
     let _ = child.wait();
 
@@ -454,8 +469,8 @@ fn switching_preserves_live_credentials_when_timestamps_tie() {
         "2026-08-28T00:00:00Z",
     );
 
-    assert_success(&case.run(&["2"]));
-    assert_success(&case.run(&["1"]));
+    assert_success(&case.run(&["two"]));
+    assert_success(&case.run(&["one"]));
 
     assert_eq!(
         access_token(&case.codex_home.join("auth.json")),
@@ -480,7 +495,7 @@ fn switching_replaces_the_session_symlink_without_touching_its_old_target() {
     fs::rename(case.codex_home.join("auth.json"), &old_target).unwrap();
     symlink(&old_target, case.codex_home.join("auth.json")).unwrap();
 
-    assert_success(&case.run(&["2"]));
+    assert_success(&case.run(&["two"]));
 
     assert_eq!(
         access_token(&case.codex_home.join("auth.json")),
@@ -511,7 +526,7 @@ fn import_rejects_duplicate_account_identity() {
     let output = case.run(&["import", duplicate.to_str().unwrap()]);
 
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("already enrolled as account 1"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("already enrolled as account one"));
 }
 
 #[test]
@@ -549,7 +564,7 @@ fn add_runs_login_in_an_isolated_home() {
         .command()
         .env("FAKE_AUTH", &fresh)
         .env("FAKE_LOGIN_ARGS", &login_args)
-        .arg("add")
+        .args(["add", "--type", "chatgpt"])
         .output()
         .unwrap();
 
@@ -568,6 +583,132 @@ fn add_runs_login_in_an_isolated_home() {
             .lines()
             .any(|argument| argument == "--device-auth")
     );
+}
+
+#[test]
+fn remove_saved_oauth_and_api_accounts_preserves_live_login_config_and_sessions() {
+    let case = Case::new();
+    case.seed("one@example.com", "user-one", "account-one");
+    let fresh = case.home.join("fresh.json");
+    write_auth(
+        &fresh,
+        "two@example.com",
+        "user-two",
+        "account-two",
+        "token-two",
+    );
+    assert_success(&case.run(&["import", fresh.to_str().unwrap()]));
+    assert_success(&case.add_api("gateway", "https://example.com/v1", "dummy-key"));
+    fs::write(case.store.join("profile-2/usage.json"), "{}").unwrap();
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    let sessions = case.codex_home.join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(sessions.join("rollout.jsonl"), "keep").unwrap();
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+    assert_success(&case.run(&["remove", "two", "--yes"]));
+    assert_success(&case.run(&["remove", "gateway", "--yes"]));
+    assert!(!case.store.join("profile-2").exists());
+    assert!(!case.store.join("profile-3").exists());
+    assert!(case.store.join("profile-1/auth.json").exists());
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    assert_eq!(
+        fs::read_to_string(case.codex_home.join("config.toml")).unwrap(),
+        PERSONAL_CONFIG
+    );
+    assert_eq!(
+        fs::read_to_string(sessions.join("rollout.jsonl")).unwrap(),
+        "keep"
+    );
+}
+
+#[test]
+fn remove_allows_inactive_oauth_in_api_mode_and_preserves_switch_back() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    assert!(!case.run(&["remove", "personal", "--yes"]).status.success());
+    let other = case.home.join("other.json");
+    write_auth(&other, "other@example.com", "other", "other", "other-token");
+    assert_success(&case.run(&["import", other.to_str().unwrap()]));
+    let (url, server) = api_server(&[("200 OK", MODEL_LIST)]);
+    assert_success(&case.add_api("company", &url, "dummy-key"));
+    assert_success(&case.run(&["use", "company"]));
+    server.join().unwrap();
+    let config = fs::read(case.codex_home.join("config.toml")).unwrap();
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+    let output = case.run(&["remove", "company", "--yes"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("still referenced"));
+    assert_success(&case.run(&["remove", "personal", "--yes"]));
+    assert!(!case.store.join("profile-1").exists());
+    assert!(case.store.join("profile-3/api.json").exists());
+    assert_eq!(
+        fs::read(case.codex_home.join("config.toml")).unwrap(),
+        config
+    );
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    assert_success(&case.run(&["use", "other"]));
+    assert_eq!(
+        access_token(&case.codex_home.join("auth.json")),
+        "other-token"
+    );
+    assert_eq!(
+        read_config(&case),
+        toml_edit::de::from_str::<Value>(PERSONAL_CONFIG).unwrap()
+    );
+}
+
+#[test]
+fn remove_keeps_an_oauth_profile_when_session_auth_is_a_symlink_into_it() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    fs::remove_file(case.codex_home.join("auth.json")).unwrap();
+    std::os::unix::fs::symlink(
+        case.store.join("profile-1/auth.json"),
+        case.codex_home.join("auth.json"),
+    )
+    .unwrap();
+    let (url, server) = api_server(&[("200 OK", MODEL_LIST)]);
+    assert_success(&case.add_api("company", &url, "dummy-key"));
+    assert_success(&case.run(&["use", "company"]));
+    server.join().unwrap();
+    assert!(!case.run(&["remove", "personal", "--yes"]).status.success());
+    assert!(case.codex_home.join("auth.json").exists());
+}
+
+#[test]
+fn remove_requires_confirmation_and_cancel_keeps_the_profile() {
+    let case = Case::new();
+    assert_success(&case.add_api("gateway", "https://example.com/v1", "dummy-key"));
+    assert!(!case.run(&["remove", "gateway"]).status.success());
+    for answer in [b"n\n".as_slice(), b"y\n".as_slice()] {
+        let mut command = case.command();
+        command.args(["remove", "gateway"]);
+        let mut removal = PtyChild::spawn(command);
+        removal.wait_for_output(b"Remove this account? [y/N]:");
+        removal.send(answer);
+        removal.wait_success();
+        assert_eq!(case.store.join("profile-1").exists(), answer == b"n\n");
+    }
+}
+
+#[test]
+fn remove_rejects_profile_directory_symlinks() {
+    let case = Case::new();
+    let outside = case.home.join("outside-profile");
+    fs::create_dir_all(&outside).unwrap();
+    write_auth(
+        &outside.join("auth.json"),
+        "other@example.com",
+        "other",
+        "other",
+        "dummy-token",
+    );
+    fs::create_dir_all(&case.store).unwrap();
+    std::os::unix::fs::symlink(&outside, case.store.join("profile-1")).unwrap();
+    assert!(!case.run(&["remove", "other", "--yes"]).status.success());
+    assert!(outside.join("auth.json").exists());
 }
 
 #[test]
@@ -615,7 +756,7 @@ fn relogin_rejects_a_different_account() {
     let output = case
         .command()
         .env("FAKE_AUTH", &wrong)
-        .args(["relogin", "1"])
+        .args(["relogin", "one"])
         .output()
         .unwrap();
 
@@ -641,7 +782,7 @@ fn selected_relogin_updates_the_session_and_prints_restart_guidance() {
     let output = case
         .command()
         .env("FAKE_AUTH", &replacement)
-        .args(["relogin", "1"])
+        .args(["relogin", "one"])
         .output()
         .unwrap();
 
@@ -814,7 +955,7 @@ fn status_infers_selection_when_codex_changes_to_an_enrolled_account() {
     let output = case.run(&["status"]);
 
     assert_success(&output);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("* 2  two@example.com"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("* two  two@example.com"));
 }
 
 #[test]
@@ -1122,7 +1263,6 @@ approval_policy = "on-request"
 
 [model_providers.unicodex]
 name = "OpenAI"
-base_url = "https://chatgpt.com/backend-api/codex" # Personal route
 wire_api = "responses"
 requires_openai_auth = true
 stream_idle_timeout_ms = 600000 # Keep provider tuning
@@ -1141,30 +1281,136 @@ fn read_config(case: &Case) -> Value {
 }
 
 #[test]
+fn oauth_switch_from_an_unmanaged_relay_builds_official_connection_without_changing_provider() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    let mut document = PERSONAL_CONFIG.parse::<toml_edit::DocumentMut>().unwrap();
+    let table = document["model_providers"]["unicodex"]
+        .as_table_like_mut()
+        .unwrap();
+    for (key, text) in [
+        ("name", "copilot"),
+        ("base_url", "https://old-relay.example/v1"),
+        ("env_key", "OLD_RELAY_KEY"),
+        ("experimental_bearer_token", "unused-key"),
+    ] {
+        table.insert(key, toml_edit::value(text));
+    }
+    let mut auth = toml_edit::Table::new();
+    auth.insert("command", toml_edit::value("old-auth-command"));
+    table.insert("auth", toml_edit::Item::Table(auth));
+    let mut extra = toml_edit::Table::new();
+    extra.insert("flag", toml_edit::value(true));
+    table.insert("extra", toml_edit::Item::Table(extra));
+    document["openai_base_url"] = toml_edit::value("https://stale-built-in.example/v1");
+    fs::write(case.codex_home.join("config.toml"), document.to_string()).unwrap();
+    let live_auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+    assert_success(&case.run(&["use", "personal"]));
+    let current = read_config(&case);
+    assert_eq!(current["model_provider"], "unicodex");
+    let table = &current["model_providers"]["unicodex"];
+    assert_eq!(table["name"], "OpenAI");
+    assert_eq!(table["wire_api"], "responses");
+    assert_eq!(table["requires_openai_auth"], true);
+    for key in ["base_url", "env_key", "experimental_bearer_token", "auth"] {
+        assert!(table.get(key).is_none());
+    }
+    assert!(current.get("openai_base_url").is_none());
+    assert_eq!(table["stream_idle_timeout_ms"], 600000);
+    assert_eq!(table["extra"]["flag"], true);
+    for key in [
+        "model",
+        "model_reasoning_effort",
+        "approval_policy",
+        "mcp_servers",
+        "projects",
+    ] {
+        let original: Value = toml_edit::de::from_str(PERSONAL_CONFIG).unwrap();
+        assert_eq!(current[key], original[key]);
+    }
+    assert_eq!(
+        fs::read(case.codex_home.join("auth.json")).unwrap(),
+        live_auth
+    );
+}
+
+#[test]
+fn builtin_oauth_switch_removes_a_stale_relay_url() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    fs::write(case.codex_home.join("config.toml"), "model = \"gpt-6.1-sol\"\nmodel_reasoning_effort = \"high\"\nopenai_base_url = \"https://old-relay.example/v1\"\n").unwrap();
+    assert_success(&case.run(&["use", "personal"]));
+    let current = read_config(&case);
+    assert!(current.get("model_provider").is_none());
+    assert!(current.get("openai_base_url").is_none());
+    assert_eq!(current["model_reasoning_effort"], "high");
+}
+
+#[test]
+fn adding_chatgpt_uses_official_connection_without_rewriting_live_relay_config() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    let relay = PERSONAL_CONFIG.replace("name = \"OpenAI\"", "name = \"old-relay\"\nbase_url = \"https://old-relay.example/v1\"\nenv_key = \"OLD_RELAY_KEY\"");
+    fs::write(case.codex_home.join("config.toml"), &relay).unwrap();
+    let auth_before = fs::read(case.codex_home.join("auth.json")).unwrap();
+    let fresh = case.home.join("fresh.json");
+    write_auth(&fresh, "other@example.com", "other", "other", "other-token");
+    let captured = case.home.join("login-config.toml");
+    let output = case
+        .command()
+        .env("FAKE_AUTH", &fresh)
+        .env("FAKE_LOGIN_CONFIG", &captured)
+        .args(["add", "--type", "chatgpt"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let official: Value = toml_edit::de::from_str(&fs::read_to_string(captured).unwrap()).unwrap();
+    assert_eq!(official["model_provider"], "unicodex");
+    let table = &official["model_providers"]["unicodex"];
+    assert_eq!(table["name"], "OpenAI");
+    assert_eq!(table["requires_openai_auth"], true);
+    assert!(table.get("base_url").is_none());
+    assert!(table.get("env_key").is_none());
+    assert_eq!(
+        fs::read_to_string(case.codex_home.join("config.toml")).unwrap(),
+        relay
+    );
+    assert_eq!(
+        fs::read(case.codex_home.join("auth.json")).unwrap(),
+        auth_before
+    );
+}
+
+#[test]
 fn root_help_explains_supported_accounts_and_restart_requirement() {
     let case = Case::new();
     let output = case.run(&["--help"]);
     assert_success(&output);
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(help.contains("ChatGPT subscription accounts"));
-    assert!(help.contains("CLIProxyAPI (CPA) API-key accounts"));
+    assert!(help.contains("Responses-compatible API-key accounts"));
     assert!(help.contains("model_provider"));
     assert!(help.contains("Existing Codex processes must be restarted"));
-    assert!(help.contains("Arbitrary third-party API-key services are not supported"));
+    assert!(help.contains("Generic API accounts do not query quota"));
     assert!(!case.store.exists());
 }
 
 #[test]
-fn api_add_help_explains_cpa_scope_and_local_only_enrollment() {
+fn api_add_help_explains_api_types_and_local_only_enrollment() {
     let case = Case::new();
     let output = case.run(&["add", "--help"]);
     assert_success(&output);
     let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("interactive wizard"));
+    assert!(help.contains("--type chatgpt or --type api"));
+    assert!(help.contains("isolated home"));
     assert!(help.contains("CLIProxyAPI (CPA)"));
-    assert!(help.contains("Arbitrary API-key services are not supported"));
+    assert!(help.contains("New API accounts default to generic"));
+    assert!(help.contains("--api-type cpa"));
+    assert!(help.contains("optional website"));
     assert!(help.contains("OpenAI Responses API and /models"));
     assert!(help.contains("/v0/resource/plugins/cpa-key-billing/subscription"));
-    assert!(help.contains("with the enrolled key as a Bearer token"));
+    assert!(help.contains("using the enrolled key as a Bearer token"));
     assert!(help.contains("cxa does not install or load server plugins"));
     assert!(help.contains("does not verify the key"));
     assert!(help.contains("cxa use ACCOUNT"));
@@ -1173,7 +1419,7 @@ fn api_add_help_explains_cpa_scope_and_local_only_enrollment() {
 }
 
 #[test]
-fn interactive_api_add_identifies_cpa_and_does_not_echo_the_key() {
+fn interactive_api_add_identifies_cpa_and_uses_visible_key_input() {
     let case = Case::new();
     case.seed("personal@example.com", "personal", "personal");
     fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
@@ -1181,21 +1427,27 @@ fn interactive_api_add_identifies_cpa_and_does_not_echo_the_key() {
     let mut command = case.command();
     command.args([
         "add",
-        "--api-key",
+        "--type",
+        "api",
+        "--api-type",
+        "cpa",
         "--name",
         "company",
         "--base-url",
         "http://company.test:8317/v1",
     ]);
     let mut enrollment = PtyChild::spawn(command);
-    enrollment.wait_for_output(b"CPA API key (hidden):");
+    enrollment.wait_for_output(b"API key:");
+    assert!(!String::from_utf8_lossy(&enrollment.output).contains("(visible)"));
     enrollment.send(b"secret-interactive-key\n");
+    enrollment.wait_for_output(b"Service website (optional, Enter to skip):");
+    enrollment.send(b"\n");
     enrollment.wait_success();
     let output = String::from_utf8_lossy(&enrollment.output);
-    assert!(output.contains("supports CLIProxyAPI (CPA) accounts only"));
+    assert!(output.contains("API type: CPA API key"));
     assert!(output.contains("GET + Bearer authentication"));
     assert!(output.contains("the key has not been verified"));
-    assert!(!output.contains("secret-interactive-key"));
+    assert!(output.contains("secret-interactive-key"));
     assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
     assert_eq!(
         fs::read_to_string(case.codex_home.join("config.toml")).unwrap(),
@@ -1218,10 +1470,7 @@ fn api_enrollment_preserves_login_and_config_and_hides_the_key() {
     );
 
     assert_success(&output);
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("supports CLIProxyAPI (CPA) accounts only")
-    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("API type: CPA API key"));
     assert!(String::from_utf8_lossy(&output.stderr).contains("GET + Bearer authentication"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("(CPA API key)"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("the key has not been verified"));
@@ -1273,6 +1522,10 @@ fn custom_provider_switch_round_trip_preserves_general_settings_and_rotated_oaut
     assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
     assert_eq!(read_config(&case)["model_provider"], "unicodex");
     assert_eq!(
+        read_config(&case)["model_providers"]["unicodex"]["name"],
+        "company"
+    );
+    assert_eq!(
         read_config(&case)["model_providers"]["unicodex"]["experimental_bearer_token"],
         "company-key"
     );
@@ -1282,7 +1535,7 @@ fn custom_provider_switch_round_trip_preserves_general_settings_and_rotated_oaut
     );
     let output = case.run(&["list"]);
     assert_success(&output);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("* 2  company  CPA API key"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("* company  CPA API key"));
 
     // A setting edited during company mode must not be overwritten by the saved route.
     let path = case.codex_home.join("config.toml");
@@ -1308,10 +1561,296 @@ fn custom_provider_switch_round_trip_preserves_general_settings_and_rotated_oaut
     );
     let text = fs::read_to_string(path).unwrap();
     assert!(text.contains("# Personal defaults must survive switching."));
-    assert!(text.contains("# Personal route"));
+    assert!(text.contains("# Keep provider tuning"));
     assert!(text.contains("# Keep provider tuning"));
     assert!(!text.contains("company-key"));
     assert!(!case.store.join("switch-pending.json").exists());
+}
+
+#[test]
+fn interactive_generic_enrollment_prompts_in_order_and_saves_website() {
+    let case = Case::new();
+    let mut command = case.command();
+    command.arg("add");
+    let mut enrollment = PtyChild::spawn(command);
+    enrollment.wait_for_output(b"Account type [1/2]:");
+    enrollment.send(b"2\n");
+    enrollment.wait_for_output(b"API base URL:");
+    enrollment.send(b"https://gateway.example.com/v1\n");
+    enrollment.wait_for_output(b"API key:");
+    enrollment.send(b"dummy-visible-key\n");
+    enrollment.wait_for_output(b"Service website (optional, Enter to skip):");
+    enrollment.send(b"https://gateway.example.com/dashboard?tab=usage\n");
+    enrollment.wait_for_output(b"Service type [generic/cpa, Enter=generic]:");
+    enrollment.send(b"\n");
+    enrollment.wait_for_output(b"Account name [gateway.example.com]:");
+    enrollment.send(b"\n");
+    enrollment.wait_success();
+    let api: Value =
+        serde_json::from_slice(&fs::read(case.store.join("profile-1/api.json")).unwrap()).unwrap();
+    assert_eq!(api["name"], "gateway.example.com");
+    assert_eq!(api["api_type"], "generic");
+    assert_eq!(api["api_key"], "dummy-visible-key");
+    assert_eq!(
+        api["website"],
+        "https://gateway.example.com/dashboard?tab=usage"
+    );
+    let output = case
+        .command()
+        .env_remove("CXA_SKIP_USAGE_REFRESH")
+        .arg("list")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Website  https://gateway.example.com/dashboard?tab=usage"));
+    assert!(stdout.contains("Quota query disabled (generic API)."));
+    assert!(!stdout.contains("dummy-visible-key"));
+    assert!(!stdout.contains("Usage unknown"));
+    assert!(!case.store.join("profile-1/usage.json").exists());
+    let mut command = case.command();
+    command
+        .env_remove("CXA_SKIP_USAGE_REFRESH")
+        .args(["watch", "--interval", "5"]);
+    let mut watch = PtyChild::spawn(command);
+    watch.wait_for_output(b"Website  https://gateway.example.com/dashboard?tab=usage");
+    watch.send(b"q");
+    watch.wait_success();
+    assert!(!case.store.join("profile-1/usage.json").exists());
+}
+
+#[test]
+fn guided_chatgpt_enrollment_selects_login_method_without_changing_live_credentials() {
+    for method in ["browser", "device"] {
+        let case = Case::new();
+        case.seed("one@example.com", "user-one", "account-one");
+        fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+        let auth_before = fs::read(case.codex_home.join("auth.json")).unwrap();
+        let fresh = case.home.join("fresh.json");
+        write_auth(
+            &fresh,
+            "two@example.com",
+            "user-two",
+            "account-two",
+            "token-two",
+        );
+        let login_args = case.home.join("login-args.txt");
+        let mut command = case.command();
+        command
+            .env("FAKE_AUTH", &fresh)
+            .env("FAKE_LOGIN_ARGS", &login_args)
+            .arg("add");
+        let mut enrollment = PtyChild::spawn(command);
+        enrollment.wait_for_output(b"Account type [1/2]:");
+        enrollment.send(b"1\n");
+        enrollment.wait_for_output(b"Login method [browser/device, Enter=browser]:");
+        enrollment.send(format!("{method}\n").as_bytes());
+        enrollment.wait_success();
+        assert_eq!(
+            access_token(&case.store.join("profile-2/auth.json")),
+            "token-two"
+        );
+        assert_eq!(
+            fs::read(case.codex_home.join("auth.json")).unwrap(),
+            auth_before
+        );
+        assert_eq!(
+            fs::read_to_string(case.codex_home.join("config.toml")).unwrap(),
+            PERSONAL_CONFIG
+        );
+        assert_eq!(
+            fs::read_to_string(login_args)
+                .unwrap()
+                .lines()
+                .any(|arg| arg == "--device-auth"),
+            method == "device"
+        );
+    }
+}
+
+#[test]
+fn enrollment_rejects_mixed_types_and_requires_a_type_without_a_terminal() {
+    let case = Case::new();
+    for args in [
+        vec!["add"],
+        vec!["add", "--type", "api", "--device-auth"],
+        vec![
+            "add",
+            "--type",
+            "chatgpt",
+            "--base-url",
+            "https://example.com/v1",
+        ],
+        vec!["add", "--type", "unknown"],
+        vec!["add", "--api-key"],
+    ] {
+        let output = case.run(&args);
+        assert!(!output.status.success(), "unexpected success: {args:?}");
+        assert!(!case.store.join("profile-1").exists());
+        assert!(!case.codex_home.join("auth.json").exists());
+    }
+}
+
+#[test]
+fn generic_gateway_switch_and_status_preserve_oauth_without_querying_quota() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+    let (base_url, server) = api_server(&[("200 OK", MODEL_LIST), ("200 OK", MODEL_LIST)]);
+    assert_success(&case.add_api_with_options(
+        "gateway",
+        &base_url,
+        "dummy-gateway-key",
+        &["--website", "https://gateway.example.com/usage"],
+    ));
+    assert_success(&case.run(&["models", "gateway"]));
+    assert_success(&case.run(&["use", "gateway"]));
+    let requests = server.join().unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.starts_with("GET /proxy/v1/models "))
+    );
+    assert_eq!(read_config(&case)["model_provider"], "unicodex");
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    // Cached data from a previous account type must not be displayed for generic accounts.
+    fs::write(
+        case.store.join("profile-2/usage.json"),
+        serde_json::to_vec(&json!({
+            "observed_at": 1, "last_attempted_at": 1,
+            "cpa": {"unlimited": true, "dimensions": []}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    for command in ["status", "list"] {
+        let mut process = case.command();
+        if command == "status" {
+            process.env_remove("CXA_SKIP_USAGE_REFRESH");
+        }
+        let output = process.arg(command).output().unwrap();
+        assert_success(&output);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("gateway  API key"));
+        assert!(stdout.contains("Website  https://gateway.example.com/usage"));
+        assert!(stdout.contains("Quota query disabled (generic API)."));
+        assert!(!stdout.contains("CPA allocation"));
+        assert!(!stdout.contains("CPA quota request failed"));
+        assert!(!stdout.contains("dummy-gateway-key"));
+    }
+    assert_success(&case.run(&["use", "personal"]));
+    let expected: Value = toml_edit::de::from_str(PERSONAL_CONFIG).unwrap();
+    assert_eq!(read_config(&case), expected);
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+}
+
+#[test]
+fn api_enrollment_rejects_invalid_website_and_unknown_type_without_changing_login() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+    for website in [
+        "javascript:alert(1)",
+        "https://user:secret@gateway.example.com",
+    ] {
+        let output = case.add_api_with_options(
+            "gateway",
+            "https://gateway.example.com/v1",
+            "dummy-key",
+            &["--website", website],
+        );
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Website must use HTTP(S)"));
+        assert!(!case.store.join("profile-2").exists());
+    }
+    let output = case.run(&["add", "--type", "api", "--api-type", "auto"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid value"));
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+}
+
+#[test]
+fn legacy_api_profiles_without_type_still_query_cpa_quota() {
+    let case = Case::new();
+    let (base_url, server) = api_server(&[("200 OK", r#"{"subscription":{"unlimited":true}}"#)]);
+    assert_success(&case.add_api("company", &base_url, "dummy-key"));
+    let path = case.store.join("profile-1/api.json");
+    let mut api: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    api.as_object_mut().unwrap().remove("api_type");
+    fs::write(path, serde_json::to_vec(&api).unwrap()).unwrap();
+    let output = case
+        .command()
+        .env_remove("CXA_SKIP_USAGE_REFRESH")
+        .arg("list")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let requests = server.join().unwrap();
+    assert!(
+        requests[0].starts_with("GET /proxy/v0/resource/plugins/cpa-key-billing/subscription ")
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("CPA allocation  Unlimited"));
+}
+
+#[test]
+fn guided_enrollment_can_select_cpa_and_skip_the_website() {
+    let case = Case::new();
+    let (base_url, server) = api_server(&[("200 OK", r#"{"subscription":{"unlimited":true}}"#)]);
+    let mut command = case.command();
+    command.args(["add", "--type", "api"]);
+    let mut enrollment = PtyChild::spawn(command);
+    enrollment.wait_for_output(b"API base URL:");
+    enrollment.send(format!("{base_url}\n").as_bytes());
+    enrollment.wait_for_output(b"API key:");
+    enrollment.send(b"dummy-cpa-key\n");
+    enrollment.wait_for_output(b"Service website (optional, Enter to skip):");
+    enrollment.send(b"\n");
+    enrollment.wait_for_output(b"Service type [generic/cpa, Enter=generic]:");
+    enrollment.send(b"cpa\n");
+    enrollment.wait_for_output(b"Account name [127.0.0.1]:");
+    enrollment.send(b"company\n");
+    enrollment.wait_success();
+    let api: Value =
+        serde_json::from_slice(&fs::read(case.store.join("profile-1/api.json")).unwrap()).unwrap();
+    assert_eq!(api["api_type"], "cpa");
+    assert!(api.get("website").is_none());
+    let output = case
+        .command()
+        .env_remove("CXA_SKIP_USAGE_REFRESH")
+        .arg("list")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let requests = server.join().unwrap();
+    assert!(
+        requests[0].starts_with("GET /proxy/v0/resource/plugins/cpa-key-billing/subscription ")
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("CPA allocation  Unlimited"));
+}
+
+#[test]
+fn redirected_api_enrollment_requires_explicit_name_and_base_url() {
+    let case = Case::new();
+    for options in [
+        vec!["add", "--type", "api", "--api-key-stdin"],
+        vec![
+            "add",
+            "--type",
+            "api",
+            "--api-key-stdin",
+            "--name",
+            "gateway",
+        ],
+    ] {
+        let output = case.run(&options);
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("Scripted API enrollment requires --name and --base-url")
+        );
+        assert!(!case.store.join("profile-1").exists());
+    }
 }
 
 #[test]
@@ -1323,17 +1862,62 @@ fn successive_api_switches_restore_the_original_oauth_route() {
     let (other_url, other_server) = api_server(&[("200 OK", MODEL_LIST)]);
     assert_success(&case.add_api("company", &company_url, "first-key"));
     assert_success(&case.add_api("other", &other_url, "second-key"));
-    assert_success(&case.run(&["2"]));
-    assert_success(&case.run(&["3"]));
+    assert_success(&case.run(&["company"]));
+    assert_eq!(
+        read_config(&case)["model_providers"]["unicodex"]["name"],
+        "company"
+    );
+    assert_success(&case.run(&["other"]));
+    assert_eq!(
+        read_config(&case)["model_providers"]["unicodex"]["name"],
+        "other"
+    );
     company_server.join().unwrap();
     other_server.join().unwrap();
     assert_eq!(
         read_config(&case)["model_providers"]["unicodex"]["experimental_bearer_token"],
         "second-key"
     );
-    assert_success(&case.run(&["1"]));
+    assert_success(&case.run(&["personal"]));
     let expected: Value = toml_edit::de::from_str(PERSONAL_CONFIG).unwrap();
     assert_eq!(read_config(&case), expected);
+}
+
+#[test]
+fn legacy_api_connection_state_ignores_old_relay_snapshot_when_selecting_oauth() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    let (url, server) = api_server(&[("200 OK", MODEL_LIST), ("200 OK", MODEL_LIST)]);
+    assert_success(&case.add_api("company", &url, "dummy-key"));
+    assert_success(&case.run(&["use", "company"]));
+    let config_path = case.codex_home.join("config.toml");
+    let mut document = fs::read_to_string(&config_path)
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    let original: Value = toml_edit::de::from_str(PERSONAL_CONFIG).unwrap();
+    document["model_providers"]["unicodex"]["name"] = toml_edit::value(
+        original["model_providers"]["unicodex"]["name"]
+            .as_str()
+            .unwrap(),
+    );
+    fs::write(&config_path, document.to_string()).unwrap();
+    let state_path = case.store.join("connection.json");
+    let mut state: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    state.as_object_mut().unwrap().remove("oauth_name");
+    state["api"].as_object_mut().unwrap().remove("name");
+    state["oauth"] = Value::String("[model_providers.unicodex]\nname = \"old-relay\"\nbase_url = \"https://old-relay.example/v1\"\nenv_key = \"OLD_RELAY_KEY\"\nrequires_openai_auth = true\n".into());
+    fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    assert_success(&case.run(&["status"]));
+    assert_success(&case.run(&["use", "company"]));
+    server.join().unwrap();
+    assert_eq!(
+        read_config(&case)["model_providers"]["unicodex"]["name"],
+        "company"
+    );
+    assert_success(&case.run(&["use", "personal"]));
+    assert_eq!(read_config(&case), original);
 }
 
 #[test]
@@ -1348,7 +1932,7 @@ fn builtin_openai_switch_keeps_default_provider_and_restores_login() {
     let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
     let (base_url, server) = api_server(&[("200 OK", MODEL_LIST)]);
     assert_success(&case.add_api("company", &base_url, "company-key"));
-    assert_success(&case.run(&["2"]));
+    assert_success(&case.run(&["company"]));
     server.join().unwrap();
     assert!(read_config(&case).get("model_provider").is_none());
     assert_eq!(
@@ -1362,8 +1946,8 @@ fn builtin_openai_switch_keeps_default_provider_and_restores_login() {
         fs::read(case.store.join("profile-1/auth.json")).unwrap(),
         auth
     );
-    assert!(String::from_utf8_lossy(&case.run(&["status"]).stdout).contains("* 2  company"));
-    assert_success(&case.run(&["1"]));
+    assert!(String::from_utf8_lossy(&case.run(&["status"]).stdout).contains("* company"));
+    assert_success(&case.run(&["personal"]));
     assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
     assert!(read_config(&case).get("openai_base_url").is_none());
     assert!(read_config(&case).get("model_provider").is_none());
@@ -1376,14 +1960,14 @@ fn connection_edits_outside_cxa_are_reported_without_overwriting_them() {
     fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
     let (base_url, server) = api_server(&[("200 OK", MODEL_LIST)]);
     assert_success(&case.add_api("company", &base_url, "company-key"));
-    assert_success(&case.run(&["2"]));
+    assert_success(&case.run(&["company"]));
     server.join().unwrap();
     let path = case.codex_home.join("config.toml");
     let edited = fs::read_to_string(&path)
         .unwrap()
         .replace(base_url.trim_end_matches('/'), "http://manual.test/v1");
     fs::write(&path, &edited).unwrap();
-    let output = case.run(&["1"]);
+    let output = case.run(&["personal"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("changed outside cxa"));
     assert_eq!(fs::read_to_string(path).unwrap(), edited);
@@ -1560,6 +2144,100 @@ fn models_command_does_not_query_chatgpt_account_as_api() {
 }
 
 #[test]
+fn names_replace_numeric_and_partial_selectors_without_changing_live_state() {
+    let case = Case::new();
+    case.seed("jaxonblazers@example.com", "personal", "personal");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    assert_success(&case.add_api("company", "https://example.com/v1", "dummy-key"));
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+    let config = fs::read(case.codex_home.join("config.toml")).unwrap();
+    let oauth = fs::read(case.store.join("profile-1/auth.json")).unwrap();
+    let api = fs::read(case.store.join("profile-2/api.json")).unwrap();
+    assert_success(&case.run(&["rename", "jaxonblazers", "jax"]));
+    assert_success(&case.run(&["rename", "company", "work"]));
+    for args in [
+        vec!["1"],
+        vec!["use", "2"],
+        vec!["remove", "2", "--yes"],
+        vec!["models", "2"],
+        vec!["relogin", "1"],
+        vec!["use", "ja"],
+        vec!["use", "jaxonblazers@example.com"],
+    ] {
+        let output = case.run(&args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("No account named"));
+    }
+    for name in ["WORK", "123", "bad name", "../escape", ""] {
+        assert!(!case.run(&["rename", "jax", name]).status.success());
+    }
+    let output = case.run(&["list"]);
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("* jax  jaxonblazers@example.com"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("  work  company"), "{stdout}");
+    assert!(!stdout.contains("* 1 ") && !stdout.contains("  2 "));
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    assert_eq!(
+        fs::read(case.codex_home.join("config.toml")).unwrap(),
+        config
+    );
+    assert_eq!(
+        fs::read(case.store.join("profile-1/auth.json")).unwrap(),
+        oauth
+    );
+    assert_eq!(
+        fs::read(case.store.join("profile-2/api.json")).unwrap(),
+        api
+    );
+    assert_success(&case.run(&["remove", "WORK", "--yes"]));
+    assert_success(&case.run(&["use", "JAX"]));
+    assert_eq!(
+        fs::read_to_string(case.store.join("profile-1/name")).unwrap(),
+        "jax"
+    );
+}
+
+#[test]
+fn legacy_name_migration_persists_collisions_across_removal_and_enrollment() {
+    let case = Case::new();
+    case.seed("shared@first.example", "one", "one");
+    let second = case.home.join("second.json");
+    write_auth(
+        &second,
+        "shared@second.example",
+        "two",
+        "two",
+        "second-token",
+    );
+    assert_success(&case.run(&["import", second.to_str().unwrap()]));
+    fs::remove_file(case.store.join("profile-1/name")).unwrap();
+    fs::remove_file(case.store.join("profile-2/name")).unwrap();
+    assert_success(&case.run(&["list"]));
+    assert_eq!(
+        fs::read_to_string(case.store.join("profile-1/name")).unwrap(),
+        "shared"
+    );
+    assert_eq!(
+        fs::read_to_string(case.store.join("profile-2/name")).unwrap(),
+        "shared-2"
+    );
+    assert_success(&case.run(&["use", "shared-2"]));
+    assert_success(&case.run(&["remove", "shared", "--yes"]));
+    assert_success(&case.run(&["list"]));
+    assert_eq!(
+        fs::read_to_string(case.store.join("profile-2/name")).unwrap(),
+        "shared-2"
+    );
+    assert_success(&case.add_api("shared", "https://example.com/v1", "dummy-key"));
+    let output = case.add_api("SHARED-2", "https://example.com/v1", "dummy-key");
+    assert!(!output.status.success());
+}
+
+#[test]
 fn model_list_failures_stop_switch_without_echoing_gateway_error_bodies() {
     for (status, body, expected) in [
         ("401 Unauthorized", "secret-company-key", "HTTP 401"),
@@ -1584,7 +2262,7 @@ fn model_list_failures_stop_switch_without_echoing_gateway_error_bodies() {
         let (base_url, server) = api_server(&[(status, body)]);
         assert_success(&case.add_api("company", &base_url, "secret-company-key"));
 
-        let output = case.run(&["2"]);
+        let output = case.run(&["company"]);
 
         server.join().unwrap();
         assert!(!output.status.success());
@@ -1613,7 +2291,7 @@ fn unreachable_model_endpoint_stops_switch_without_changing_login_or_config() {
     drop(listener);
     assert_success(&case.add_api("company", &base_url, "secret-company-key"));
 
-    let output = case.run(&["2"]);
+    let output = case.run(&["company"]);
 
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("connection or TLS error"));
@@ -1709,7 +2387,7 @@ fn oauth_quota_uses_personal_route_while_company_is_selected() {
         ("200 OK", r#"{"subscription":{"unlimited":true}}"#),
     ]);
     assert_success(&case.add_api("company", &base_url, "secret-company-key"));
-    assert_success(&case.run(&["2"]));
+    assert_success(&case.run(&["company"]));
     let codex = case.home.join("quota-codex");
     write_executable(
         &codex,
@@ -1717,7 +2395,8 @@ fn oauth_quota_uses_personal_route_while_company_is_selected() {
 case "$CODEX_HOME" in
   "$CXA_ACCOUNT_STORE"/.quota-*)
     grep -q 'requires_openai_auth = true' "$CODEX_HOME/config.toml" || exit 5
-    grep -q 'https://chatgpt.com/backend-api/codex' "$CODEX_HOME/config.toml" || exit 6
+    grep -q 'name = "OpenAI"' "$CODEX_HOME/config.toml" || exit 6
+    if grep -q 'base_url\|env_key\|experimental_bearer_token' "$CODEX_HOME/config.toml"; then exit 6; fi
     if grep -q secret-company-key "$CODEX_HOME/config.toml"; then exit 7; fi
     while IFS= read -r line; do
       case "$line" in
@@ -1750,7 +2429,7 @@ esac
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("75% left"));
-    assert!(stdout.contains("* 2  company  CPA API key"));
+    assert!(stdout.contains("* company  CPA API key"));
     assert!(stdout.contains("CPA allocation  Unlimited"));
     assert!(!stdout.contains("quota unavailable"));
     assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);

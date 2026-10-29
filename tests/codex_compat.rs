@@ -128,6 +128,8 @@ wire_api = "responses"
                     "company".into(),
                     "http://127.0.0.1:9/v1".into(),
                     "dummy-offline-key".into(),
+                    cxa::api_account::ApiType::Generic,
+                    None,
                 )
                 .unwrap(),
             )
@@ -152,6 +154,23 @@ wire_api = "responses"
             assert_eq!(result["config"]["openai_base_url"], "http://127.0.0.1:9/v1");
             let account = server.request(2, "account/read", json!({"refreshToken":false}));
             assert_eq!(account["account"]["type"], "apiKey");
+        }
+        drop(server);
+        let oauth_home = root.path().join(format!("{provider}-oauth"));
+        fs::create_dir_all(&oauth_home).unwrap();
+        cxa::connection::copy_oauth_config(&store.config, &oauth_home.join("config.toml")).unwrap();
+        let mut oauth_server = Server::start(Path::new(&binary), &oauth_home);
+        let official = oauth_server.request(1, "config/read", json!({"includeLayers":false}));
+        assert!(official["config"]["openai_base_url"].is_null());
+        if provider == "unicodex" {
+            assert_eq!(official["config"]["model_provider"], "unicodex");
+            let table = &official["config"]["model_providers"]["unicodex"];
+            assert_eq!(table["name"], "OpenAI");
+            assert_eq!(table["requires_openai_auth"], true);
+            assert!(table["base_url"].is_null());
+            assert!(table["experimental_bearer_token"].is_null());
+        } else {
+            assert!(official["config"]["model_provider"].is_null());
         }
     }
 }

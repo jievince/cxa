@@ -8,11 +8,11 @@ use std::thread;
 use std::time::Duration;
 
 use anstream::{eprintln, print, println};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use tempfile::Builder;
 
 use crate::account_store::{Account, Profile, Store, UsageRecord, now_epoch};
-use crate::api_account::ApiAccount;
+use crate::api_account::{ApiAccount, ApiType};
 use crate::app_server::{CancellationToken, query_profile_cancellable, require_file_credentials};
 use crate::auth::AuthDocument;
 use crate::config::Config;
@@ -28,14 +28,20 @@ use crate::{api_models, connection, cpa};
 #[command(
     name = "cxa",
     version,
-    about = "Switch ChatGPT and CLIProxyAPI accounts in Codex",
-    long_about = "Switch between ChatGPT subscription accounts and CLIProxyAPI (CPA) API-key accounts in Codex CLI and Desktop.\n\nKeep the same Codex home and model_provider. ChatGPT switches replace file credentials; CPA switches also update connection settings without replacing unrelated config.toml settings. Existing Codex processes must be restarted after switching.\n\nUse cxa init to save the current ChatGPT login, cxa add to enroll an account, cxa list to show remaining quota, and cxa models ACCOUNT to query CPA model IDs. Arbitrary third-party API-key services are not supported."
+    about = "Switch ChatGPT and API-key accounts in Codex",
+    long_about = "Switch between ChatGPT subscription accounts and Responses-compatible API-key accounts in Codex CLI and Desktop.\n\nKeep the same Codex home and model_provider. ChatGPT switches replace file credentials; API-key switches also update connection settings without replacing unrelated config.toml settings. Existing Codex processes must be restarted after switching.\n\nUse cxa init to save the current ChatGPT login, cxa add for guided ChatGPT or API enrollment; --type chatgpt and --type api skip the type prompt, cxa list to show accounts and available quota, and cxa models ACCOUNT to query gateway model IDs. Generic API accounts do not query quota; select --api-type cpa to enable CPA subscription queries."
 )]
 pub struct Cli {
     #[command(subcommand)]
     command: Option<CliCommand>,
-    #[arg(value_name = "ACCOUNT")]
+    #[arg(value_name = "NAME")]
     account: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum EnrollmentType {
+    Chatgpt,
+    Api,
 }
 
 #[derive(Debug, Subcommand)]
@@ -72,33 +78,48 @@ enum CliCommand {
     },
     /// Show the selected account and credential-file state.
     Status,
-    /// Switch by slot number or a unique part of the account email/name.
+    /// Switch by the account's exact name (case-insensitive).
     Use { account: String },
-    /// List a CPA account's advertised model IDs without switching accounts.
+    /// Change an account's unique name without changing its credentials.
+    Rename { account: String, name: String },
+    /// Remove a saved account and quota cache, not Codex sessions or server credentials.
+    Remove {
+        account: String,
+        /// Remove without asking for confirmation; active credentials remain protected.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// List an API account's advertised model IDs without switching accounts.
     Models {
-        /// CPA account, or the selected account when omitted.
+        /// API account, or the selected account when omitted.
         account: Option<String>,
     },
-    /// Enroll a ChatGPT OAuth account or a CLIProxyAPI (CPA) API key.
+    /// Enroll a ChatGPT OAuth account or a Responses-compatible API key.
     #[command(
         trailing_var_arg = true,
-        long_about = "Enroll a ChatGPT OAuth account, or a CLIProxyAPI (CPA) API-key account.\n\nWith --api-key, supply a name and CPA API base URL, then enter the key at a hidden prompt (or use --api-key-stdin). Arbitrary API-key services are not supported. CPA must expose the OpenAI Responses API and /models. Quota queries send GET /v0/resource/plugins/cpa-key-billing/subscription with the enrolled key as a Bearer token. cxa does not install or load server plugins.\n\nAPI enrollment only saves the key locally: it does not verify the key or change the current login or config.toml. Use cxa use ACCOUNT to check advertised models and switch; use cxa list to query quota."
+        long_about = "Enroll a ChatGPT subscription or a Responses-compatible API gateway.\n\nRun cxa add to choose an account type in the interactive wizard. Use --type chatgpt or --type api to skip the type prompt. Redirected input requires an explicit type (or --device-auth for ChatGPT).\n\nChatGPT enrollment runs Codex login in an isolated home and saves the resulting OAuth credentials without changing your current login. In a terminal, choose browser or device-code login; --device-auth selects device-code login directly. Noninteractive --type chatgpt uses Codex's default browser login flow.\n\nRun cxa add --type api to enter the base URL, API key, optional website, then choose generic/cpa and an account name. These can also be supplied with --base-url, --website, --name, and --api-key-stdin. Scripted API enrollment requires --type api, --base-url, --name, and --api-key-stdin.\n\nNew API accounts default to generic: quota queries are disabled. Select --api-type cpa to query CLIProxyAPI (CPA) quota with GET /v0/resource/plugins/cpa-key-billing/subscription, using the enrolled key as a Bearer token. cxa does not install or load server plugins and does not guess a service type from HTTP failures. All API gateways must support the OpenAI Responses API and /models.\n\nAPI enrollment only saves the key locally: it does not verify the key or change the current login or config.toml. Use cxa use ACCOUNT to check advertised models and switch; use cxa list to show accounts, websites, and supported quota."
     )]
     Add {
         /// Sign in with Codex's device-code flow.
         #[arg(long)]
         device_auth: bool,
-        /// Add a CLIProxyAPI (CPA) API key, not an arbitrary API service.
-        #[arg(long, requires_all = ["name", "base_url"], conflicts_with = "device_auth")]
-        api_key: bool,
-        /// Display name for the CPA account.
-        #[arg(long, requires = "api_key")]
+        /// Account type; when omitted, choose in the interactive wizard.
+        #[arg(long = "type", value_enum)]
+        kind: Option<EnrollmentType>,
+        /// Service type: generic (default, no quota query) or cpa.
+        #[arg(long, value_enum, requires = "kind")]
+        api_type: Option<ApiType>,
+        /// Unique name for the API account (letters, digits, dots, underscores, hyphens).
+        #[arg(long, requires = "kind")]
         name: Option<String>,
-        /// CPA API base URL, e.g. https://cpa.example.com/v1.
-        #[arg(long, requires = "api_key")]
+        /// API base URL, e.g. https://gateway.example.com/v1.
+        #[arg(long, requires = "kind")]
         base_url: Option<String>,
-        /// Read the API key from stdin instead of a hidden prompt.
-        #[arg(long, requires = "api_key")]
+        /// Optional service website, shown in status/list for manual quota checks.
+        #[arg(long, requires = "kind")]
+        website: Option<String>,
+        /// Read the API key from stdin instead of an interactive prompt.
+        #[arg(long, requires = "kind")]
         api_key_stdin: bool,
         #[arg(allow_hyphen_values = true, hide = true)]
         options: Vec<OsString>,
@@ -128,30 +149,81 @@ pub fn run(cli: Cli, config: Config) -> Result<()> {
         (Some(CliCommand::Watch { interval }), _) => app.list(true, interval),
         (Some(CliCommand::Status), _) | (None, None) => app.status(true),
         (Some(CliCommand::Use { account }), _) | (None, Some(account)) => app.switch(&account),
+        (Some(CliCommand::Rename { account, name }), _) => app.rename(&account, &name),
+        (Some(CliCommand::Remove { account, yes }), _) => app.remove(&account, yes),
         (Some(CliCommand::Models { account }), _) => app.models(account.as_deref()),
         (
             Some(CliCommand::Add {
                 device_auth,
-                api_key,
+                kind,
+                api_type,
                 name,
                 base_url,
+                website,
                 api_key_stdin,
                 options,
             }),
             _,
         ) => {
-            if api_key {
-                if !options.is_empty() {
+            if options.iter().any(|option| option == "--api-key") {
+                return Err(Error::Message("The account-type flag is now --type api, not --api-key. Use cxa add for the guided flow.".into()));
+            }
+            let kind = match kind {
+                Some(kind) => kind,
+                None if device_auth || !options.is_empty() => EnrollmentType::Chatgpt,
+                None => {
+                    if !io::stdin().is_terminal() {
+                        return Err(Error::Message("Choose an account type with --type chatgpt or --type api when input is redirected.".into()));
+                    }
+                    println!(
+                        "Add an account:\n  1  ChatGPT subscription\n  2  API gateway (Responses-compatible)"
+                    );
+                    match prompt_line("Account type [1/2]: ")?.as_str() {
+                        "1" | "chatgpt" => EnrollmentType::Chatgpt,
+                        "2" | "api" => EnrollmentType::Api,
+                        _ => return Err(Error::Message(
+                            "Account type must be 1 (chatgpt) or 2 (api); no account was saved."
+                                .into(),
+                        )),
+                    }
+                }
+            };
+            if kind == EnrollmentType::Api {
+                if device_auth || !options.is_empty() {
                     return Err(Error::Message(
-                        "Codex login arguments cannot be used with --api-key.".into(),
+                        "Codex login arguments cannot be used with --type api.".into(),
                     ));
                 }
-                app.add_api(
-                    name.expect("clap requires name"),
-                    base_url.expect("clap requires base URL"),
-                    api_key_stdin,
-                )
+                app.add_api(name, base_url, website, api_type, api_key_stdin)
             } else {
+                if api_type.is_some()
+                    || name.is_some()
+                    || base_url.is_some()
+                    || website.is_some()
+                    || api_key_stdin
+                {
+                    return Err(Error::Message(
+                        "API enrollment options require --type api; no account was saved.".into(),
+                    ));
+                }
+                let device_auth = if !device_auth && options.is_empty() && io::stdin().is_terminal()
+                {
+                    println!(
+                        "ChatGPT login runs in an isolated Codex home; your current login is not changed."
+                    );
+                    match prompt_line("Login method [browser/device, Enter=browser]: ")?.as_str() {
+                        "" | "browser" => false,
+                        "device" => true,
+                        _ => {
+                            return Err(Error::Message(
+                                "Login method must be browser or device; no account was saved."
+                                    .into(),
+                            ));
+                        }
+                    }
+                } else {
+                    device_auth
+                };
                 app.add(device_auth, &options)
             }
         }
@@ -174,6 +246,7 @@ impl App {
     fn locked(&self) -> Result<ExclusiveLock> {
         let lock = self.store.lock()?;
         connection::recover(&self.store.config)?;
+        self.store.ensure_names()?;
         self.store.sync_session_profile()?;
         Ok(lock)
     }
@@ -183,6 +256,7 @@ impl App {
             return Ok(None);
         };
         connection::recover(&self.store.config)?;
+        self.store.ensure_names()?;
         self.store.sync_session_profile()?;
         Ok(Some(lock))
     }
@@ -192,9 +266,10 @@ impl App {
         let profiles = self.store.profiles()?;
         if !profiles.is_empty() {
             if let Some(selected) = self.store.selected()? {
-                let profile = self.store.resolve(&selected.to_string())?;
+                let profile = self.store.profile(selected)?;
                 println!(
-                    "{SUCCESS}✓{SUCCESS:#} cxa is already initialized with account {ACCENT}{selected}{ACCENT:#} ({EMPHASIS}{}{EMPHASIS:#}).",
+                    "{SUCCESS}✓{SUCCESS:#} cxa is already initialized with account {ACCENT}{}{ACCENT:#} ({EMPHASIS}{}{EMPHASIS:#}).",
+                    profile.name,
                     profile.label()
                 );
                 return Ok(());
@@ -220,7 +295,7 @@ impl App {
                 )));
             }
             print!(
-                "{ACCENT}?{ACCENT:#} Found the current Codex login: {EMPHASIS}{}{EMPHASIS:#}\n  Import it as account {ACCENT}1{ACCENT:#}? {MUTED}[Y/n]{MUTED:#} ",
+                "{ACCENT}?{ACCENT:#} Found the current Codex login: {EMPHASIS}{}{EMPHASIS:#}\n  Import this account? {MUTED}[Y/n]{MUTED:#} ",
                 current.identity.label()
             );
             io::stdout()
@@ -239,11 +314,11 @@ impl App {
         println!(
             "{SUCCESS}✓{SUCCESS:#} Imported {EMPHASIS}{}{EMPHASIS:#} as account {ACCENT}{}{ACCENT:#}.",
             profile.label(),
-            profile.slot
+            profile.name
         );
         println!(
             "{SUCCESS}✓{SUCCESS:#} Account {ACCENT}{}{ACCENT:#} is now selected.",
-            profile.slot
+            profile.name
         );
         println!("{MUTED}Next:{MUTED:#} add another account with {ACCENT}cxa add{ACCENT:#}");
         Ok(())
@@ -325,7 +400,8 @@ impl App {
         let mut states: Vec<ProfileUsage> = profiles
             .iter()
             .map(|profile| {
-                if !self.store.config.skip_usage_refresh
+                if profile.supports_usage()
+                    && !self.store.config.skip_usage_refresh
                     && (force_refresh || self.needs_usage_refresh(profile.slot))
                 {
                     ProfileUsage::Loading
@@ -437,15 +513,17 @@ impl App {
             .store
             .selected()?
             .ok_or_else(|| Error::Message("No Codex account is selected.".into()))?;
-        let profile = self.store.resolve(&selected.to_string())?;
-        let session_changed = if refresh && self.needs_usage_refresh(selected) {
-            let spinner = FetchSpinner::start(format!("Fetching usage [1/1] {}", profile.label()));
-            let changed = self.refresh_usage(selected)?;
-            spinner.finish();
-            changed
-        } else {
-            false
-        };
+        let profile = self.store.profile(selected)?;
+        let session_changed =
+            if profile.supports_usage() && refresh && self.needs_usage_refresh(selected) {
+                let spinner =
+                    FetchSpinner::start(format!("Fetching usage [1/1] {}", profile.label()));
+                let changed = self.refresh_usage(selected)?;
+                spinner.finish();
+                changed
+            } else {
+                false
+            };
         let usage = self.store.usage(selected);
         print!(
             "{}",
@@ -506,21 +584,22 @@ impl App {
         } else {
             None
         };
-        if self
-            .store
-            .usage(target.slot)
-            .is_some_and(|usage| usage.exhausted_now(now_epoch()))
+        if target.supports_usage()
+            && self
+                .store
+                .usage(target.slot)
+                .is_some_and(|usage| usage.exhausted_now(now_epoch()))
         {
             eprintln!(
                 "{WARNING}warning{WARNING:#}: account {ACCENT}{}{ACCENT:#} ({EMPHASIS}{}{EMPHASIS:#}) was last seen exhausted",
-                target.slot,
+                target.name,
                 target.label()
             );
         }
         let selected = self.store.select(target.slot)?;
         println!(
             "{SUCCESS}✓{SUCCESS:#} Account {ACCENT}{}{ACCENT:#} ({EMPHASIS}{}{EMPHASIS:#}) is now selected.",
-            selected.slot,
+            selected.name,
             selected.label()
         );
         restart_notice();
@@ -535,19 +614,14 @@ impl App {
 
     fn models(&self, selector: Option<&str>) -> Result<()> {
         let _lock = self.locked()?;
-        let selected;
-        let selector = match selector {
-            Some(selector) => selector,
-            None => {
-                selected = self
-                    .store
+        let profile = match selector {
+            Some(selector) => self.store.resolve(selector)?,
+            None => self.store.profile(
+                self.store
                     .selected()?
-                    .ok_or_else(|| Error::Message("No account is selected.".into()))?
-                    .to_string();
-                &selected
-            }
+                    .ok_or_else(|| Error::Message("No account is selected.".into()))?,
+            )?,
         };
-        let profile = self.store.resolve(selector)?;
         let Account::Api(account) = &profile.account else {
             return Err(Error::Message(
                 "`cxa models` queries API gateways only. Use Codex's model picker for ChatGPT accounts.".into(),
@@ -558,6 +632,18 @@ impl App {
         for model in models {
             println!("  {model}");
         }
+        Ok(())
+    }
+
+    fn rename(&self, selector: &str, name: &str) -> Result<()> {
+        let _lock = self.locked()?;
+        let profile = self.store.rename(selector, name)?;
+        println!(
+            "✓ Account {} ({}) is now named {}. Credentials and config.toml were not changed.",
+            selector,
+            profile.label(),
+            profile.name
+        );
         Ok(())
     }
 
@@ -573,19 +659,60 @@ impl App {
         println!(
             "\n{SUCCESS}✓{SUCCESS:#} Enrolled {EMPHASIS}{}{EMPHASIS:#} as account {ACCENT}{}{ACCENT:#}.",
             profile.label(),
-            profile.slot
+            profile.name
         );
         println!(
-            "{MUTED}Next:{MUTED:#} switch to it with {ACCENT}cxa {}{ACCENT:#}",
-            profile.slot
+            "{MUTED}Next:{MUTED:#} switch to it with {ACCENT}cxa use {}{ACCENT:#}",
+            profile.name
         );
         Ok(())
     }
 
-    fn add_api(&self, name: String, base_url: String, from_stdin: bool) -> Result<()> {
-        eprintln!(
-            "--api-key supports CLIProxyAPI (CPA) accounts only. Quota queries use your CPA service's subscription endpoint (GET + Bearer authentication)."
+    fn remove(&self, selector: &str, assume_yes: bool) -> Result<()> {
+        let _lock = self.locked()?;
+        let profile = self.store.resolve(selector)?;
+        self.store.check_removable(&profile)?;
+        if !assume_yes {
+            if !io::stdin().is_terminal() {
+                return Err(Error::Message("Removing an account requires confirmation; use --yes when input is redirected.".into()));
+            }
+            println!(
+                "Remove account {} ({})? This deletes its saved credentials and quota cache. Re-adding requires login or the API key. Codex sessions and server credentials are not removed.",
+                profile.name,
+                profile.label()
+            );
+            if prompt_line("Remove this account? [y/N]: ")? != "y" {
+                println!("Cancelled; nothing was removed.");
+                return Ok(());
+            }
+        }
+        self.store.remove(&profile)?;
+        println!(
+            "✓ Removed account {} ({}) from cxa. Codex sessions, login, and config.toml were not changed.",
+            profile.name,
+            profile.label()
         );
+        Ok(())
+    }
+
+    fn add_api(
+        &self,
+        name: Option<String>,
+        base_url: Option<String>,
+        website: Option<String>,
+        api_type: Option<ApiType>,
+        from_stdin: bool,
+    ) -> Result<()> {
+        let interactive = !from_stdin && io::stdin().is_terminal();
+        if !interactive && (name.is_none() || base_url.is_none()) {
+            return Err(Error::Message(
+                "Scripted API enrollment requires --name and --base-url; use cxa add --type api in a terminal for interactive enrollment.".into(),
+            ));
+        }
+        let base_url = match base_url {
+            Some(url) => url,
+            None => prompt_line("API base URL: ")?,
+        };
         let key = if from_stdin {
             let mut key = String::new();
             io::stdin()
@@ -598,23 +725,66 @@ impl App {
                     "Use --api-key-stdin when API-key input is redirected.".into(),
                 ));
             }
-            rpassword::prompt_password("CPA API key (hidden): ")
-                .map_err(|error| Error::io("API key prompt", error))?
+            prompt_line("API key: ")?
         };
-        let account = ApiAccount::new(name, base_url, key)?;
+        let website = match website {
+            Some(url) => Some(url),
+            None if interactive => {
+                Some(prompt_line("Service website (optional, Enter to skip): ")?)
+            }
+            None => None,
+        };
+        let api_type = match api_type {
+            Some(api_type) => api_type,
+            None if interactive => {
+                match prompt_line("Service type [generic/cpa, Enter=generic]: ")?.as_str() {
+                    "" | "generic" => ApiType::Generic,
+                    "cpa" => ApiType::Cpa,
+                    _ => {
+                        return Err(Error::Message(
+                            "Service type must be generic or cpa; no account was saved.".into(),
+                        ));
+                    }
+                }
+            }
+            None => ApiType::Generic,
+        };
+        eprintln!(
+            "API type: {}. {}",
+            api_type.label(),
+            match api_type {
+                ApiType::Generic =>
+                    "Quota queries are disabled; an optional website is shown for manual checks.",
+                ApiType::Cpa =>
+                    "Quota queries use the CPA subscription endpoint (GET + Bearer authentication).",
+            }
+        );
+        let name = match name {
+            Some(name) => name,
+            None => {
+                let default = reqwest::Url::parse(base_url.trim())
+                    .ok()
+                    .and_then(|url| url.host_str().map(str::to_owned))
+                    .unwrap_or_else(|| "api".into());
+                let entered = prompt_line(&format!("Account name [{default}]: "))?;
+                if entered.is_empty() { default } else { entered }
+            }
+        };
+        let account = ApiAccount::new(name, base_url, key, api_type, website)?;
         let _lock = self.locked()?;
         let profile = self.store.enroll_api(account)?;
         println!(
-            "{SUCCESS}✓{SUCCESS:#} Enrolled {EMPHASIS}{}{EMPHASIS:#} as account {ACCENT}{}{ACCENT:#} (CPA API key).",
+            "{SUCCESS}✓{SUCCESS:#} Enrolled {EMPHASIS}{}{EMPHASIS:#} as account {ACCENT}{}{ACCENT:#} ({}).",
             profile.label(),
-            profile.slot
+            profile.name,
+            api_type.label()
         );
         println!(
             "{MUTED}Saved locally; the key has not been verified. Your current login and config.toml were not changed.{MUTED:#}"
         );
         println!(
-            "{MUTED}Next:{MUTED:#} check advertised models and switch with {ACCENT}cxa use {}{ACCENT:#}; query quota with {ACCENT}cxa list{ACCENT:#}.",
-            profile.slot
+            "{MUTED}Next:{MUTED:#} check advertised models and switch with {ACCENT}cxa use {}{ACCENT:#}; show accounts with {ACCENT}cxa list{ACCENT:#}.",
+            profile.name
         );
         Ok(())
     }
@@ -625,11 +795,11 @@ impl App {
         println!(
             "{SUCCESS}✓{SUCCESS:#} Imported {EMPHASIS}{}{EMPHASIS:#} as account {ACCENT}{}{ACCENT:#}.",
             profile.label(),
-            profile.slot
+            profile.name
         );
         println!(
-            "{MUTED}Next:{MUTED:#} switch to it with {ACCENT}cxa {}{ACCENT:#}",
-            profile.slot
+            "{MUTED}Next:{MUTED:#} switch to it with {ACCENT}cxa use {}{ACCENT:#}",
+            profile.name
         );
         Ok(())
     }
@@ -641,7 +811,7 @@ impl App {
         target.oauth()?;
         println!(
             "{ACCENT}Re-authenticating account {}{ACCENT:#} ({EMPHASIS}{}{EMPHASIS:#}).\n",
-            target.slot,
+            target.name,
             target.label()
         );
         let login = StagedLogin::run(&self.store.config, options)?;
@@ -654,7 +824,7 @@ impl App {
         println!(
             "{SUCCESS}✓{SUCCESS:#} Re-authenticated {EMPHASIS}{}{EMPHASIS:#} as account {ACCENT}{}{ACCENT:#}.",
             profile.label(),
-            profile.slot
+            profile.name
         );
         Ok(())
     }
@@ -787,9 +957,8 @@ fn write_loading_profile(output: &mut String, profile: &Profile, selected: bool,
     let spinner = LOADING_FRAMES[frame % LOADING_FRAMES.len()];
     writeln!(
         output,
-        "{ACCENT}{marker} {}{ACCENT:#}  {EMPHASIS}{}{EMPHASIS:#}  {ACCENT}{spinner}{ACCENT:#} {MUTED}loading{MUTED:#}",
-        profile.slot,
-        profile.label()
+        "{ACCENT}{marker}{ACCENT:#} {EMPHASIS}{}{EMPHASIS:#}  {ACCENT}{spinner}{ACCENT:#} {MUTED}loading{MUTED:#}",
+        profile.heading()
     )
     .unwrap();
 }
@@ -805,11 +974,14 @@ fn refresh_usage_for_config(
         return Ok(false);
     }
     let previous = store.usage(slot);
-    let (next, session_changed) = match store.resolve(&slot.to_string())?.account {
+    let (next, session_changed) = match store.profile(slot)?.account {
         Account::Chatgpt(_) => {
             query_profile_cancellable(config, &config.profile_auth(slot), cancellation)?
         }
-        Account::Api(account) => (cpa::query(&account, cancellation)?, false),
+        Account::Api(account) => match account.api_type {
+            ApiType::Generic => return Ok(false),
+            ApiType::Cpa => (cpa::query(&account, cancellation)?, false),
+        },
     };
     write_usage_result(previous.as_ref(), &next, &config.profile_usage(slot))?;
     Ok(session_changed)
@@ -825,44 +997,75 @@ fn profile_output(
     let marker = if selected { "*" } else { " " };
     let plan = match &profile.account {
         Account::Chatgpt(_) => usage_plan(usage),
-        Account::Api(_) => Some("CPA API key".into()),
+        Account::Api(account) => Some(account.api_type.label().into()),
     };
-    let recency = usage_recency(usage, now);
+    let recency = if profile.supports_usage() {
+        usage_recency(usage, now)
+    } else {
+        None
+    };
     if let (Some(plan), Some(recency)) = (plan.as_deref(), recency.as_deref()) {
         writeln!(
             output,
-            "{ACCENT}{marker} {}{ACCENT:#}  {EMPHASIS}{}{EMPHASIS:#}  {MUTED}{plan} · {recency}{MUTED:#}",
-            profile.slot,
-            profile.label()
+            "{ACCENT}{marker}{ACCENT:#} {EMPHASIS}{}{EMPHASIS:#}  {MUTED}{plan} · {recency}{MUTED:#}",
+            profile.heading()
         )
         .unwrap();
     } else if let Some(plan) = plan {
         writeln!(
             output,
-            "{ACCENT}{marker} {}{ACCENT:#}  {EMPHASIS}{}{EMPHASIS:#}  {MUTED}{plan}{MUTED:#}",
-            profile.slot,
-            profile.label()
+            "{ACCENT}{marker}{ACCENT:#} {EMPHASIS}{}{EMPHASIS:#}  {MUTED}{plan}{MUTED:#}",
+            profile.heading()
         )
         .unwrap();
     } else if let Some(recency) = recency {
         writeln!(
             output,
-            "{ACCENT}{marker} {}{ACCENT:#}  {EMPHASIS}{}{EMPHASIS:#}  {MUTED}{recency}{MUTED:#}",
-            profile.slot,
-            profile.label()
+            "{ACCENT}{marker}{ACCENT:#} {EMPHASIS}{}{EMPHASIS:#}  {MUTED}{recency}{MUTED:#}",
+            profile.heading()
         )
         .unwrap();
     } else {
         writeln!(
             output,
-            "{ACCENT}{marker} {}{ACCENT:#}  {EMPHASIS}{}{EMPHASIS:#}",
-            profile.slot,
-            profile.label()
+            "{ACCENT}{marker}{ACCENT:#} {EMPHASIS}{}{EMPHASIS:#}",
+            profile.heading()
         )
         .unwrap();
     }
-    output.push_str(&render_usage(usage, now));
+    if let Account::Api(account) = &profile.account {
+        if let Some(website) = &account.website {
+            writeln!(output, "    Website  {website}").unwrap();
+        }
+    }
+    if profile.supports_usage() {
+        output.push_str(&render_usage(usage, now));
+    } else {
+        writeln!(
+            output,
+            "    {MUTED}Quota query disabled (generic API).{MUTED:#}"
+        )
+        .unwrap();
+    }
     output
+}
+
+fn prompt_line(prompt: &str) -> Result<String> {
+    print!("{prompt}");
+    io::stdout()
+        .flush()
+        .map_err(|error| Error::io("stdout", error))?;
+    let mut input = String::new();
+    if io::stdin()
+        .read_line(&mut input)
+        .map_err(|error| Error::io("stdin", error))?
+        == 0
+    {
+        return Err(Error::Message(
+            "Account enrollment cancelled: input ended.".into(),
+        ));
+    }
+    Ok(input.trim().to_owned())
 }
 
 fn restart_notice() {
