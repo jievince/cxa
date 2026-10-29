@@ -12,7 +12,7 @@ use crate::config::Config;
 use crate::fs::{atomic_write, remove_file_if_exists, sync_parent};
 use crate::{Error, Result};
 
-// Only these connection settings belong to cxa. Other configuration remains live.
+// Connection fields tracked as a snapshot; the provider name is tracked separately.
 const PROVIDER_KEYS: [&str; 6] = [
     "base_url",
     "wire_api",
@@ -269,7 +269,7 @@ pub fn select(config: &Config, profile: &Profile) -> Result<()> {
                     })?;
                 table.remove("env_key");
                 table.remove("auth");
-                table.insert("name", value(&account.name));
+                table.insert("name", value(&profile.name));
                 table.insert("base_url", value(&account.base_url));
                 table.insert("wire_api", value("responses"));
                 table.insert("requires_openai_auth", value(false));
@@ -278,7 +278,7 @@ pub fn select(config: &Config, profile: &Profile) -> Result<()> {
             state.api = Some(AppliedApi {
                 slot: profile.slot,
                 settings: capture(&document, &provider).to_string(),
-                name: (provider != "openai").then(|| account.name.clone()),
+                name: (provider != "openai").then(|| profile.name.clone()),
             });
             (provider == "openai").then(|| {
                 serde_json::to_vec(&serde_json::json!({

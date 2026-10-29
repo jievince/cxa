@@ -71,6 +71,7 @@ jobs:
           mkdir -p "dist/$ASSET"
           install -m 0755 "target/$TARGET/release/cxa" "dist/$ASSET/cxa"
           cp README.md README.zh-CN.md LICENSE install.sh "dist/$ASSET/"
+          cp -R docs "dist/$ASSET/docs"
           tar -C dist -czf "dist/$ASSET.tar.gz" "$ASSET"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
@@ -137,6 +138,7 @@ jobs:
           mkdir -p "dist/$ASSET"
           install -m 0755 "target/$TARGET/release/cxa" "dist/$ASSET/cxa"
           cp README.md README.zh-CN.md LICENSE install.sh "dist/$ASSET/"
+          cp -R docs "dist/$ASSET/docs"
           tar -C dist -czf "dist/$ASSET.tar.gz" "$ASSET"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:

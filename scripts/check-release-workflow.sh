@@ -30,6 +30,12 @@ assert_contract(
 )
 
 linux_build = jobs.fetch("build-linux")
+%w[build-linux build-macos].each do |job_name|
+  assert_contract(
+    named_step(jobs.fetch(job_name), "Package archive").fetch("run", "").include?('cp -R docs "dist/$ASSET/docs"'),
+    "#{job_name} archives must include the linked reference documentation"
+  )
+end
 assert_contract(linux_build["runs-on"] == "ubuntu-22.04", "Linux archives must target Ubuntu 22.04")
 assert_contract(
   scripts(linux_build).include?('cargo build --locked --release --target "$TARGET" --bin cxa'),

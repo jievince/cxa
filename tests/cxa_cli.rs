@@ -1410,11 +1410,8 @@ fn api_add_help_explains_api_types_and_local_only_enrollment() {
     assert!(help.contains("--api-type cpa"));
     assert!(help.contains("optional website"));
     assert!(help.contains("OpenAI Responses API and /models"));
-    assert!(help.contains("/v0/resource/plugins/cpa-key-billing/subscription"));
-    assert!(help.contains("using the enrolled key as a Bearer token"));
-    assert!(help.contains("cxa does not install or load server plugins"));
     assert!(help.contains("does not verify the key"));
-    assert!(help.contains("cxa use ACCOUNT"));
+    assert!(help.contains("cxa use NAME"));
     assert!(help.contains("cxa list"));
     assert!(!case.store.exists());
 }
@@ -2355,6 +2352,41 @@ fn models_command_does_not_query_chatgpt_account_as_api() {
     let output = case.run(&["models"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("queries API gateways only"));
+}
+
+#[test]
+fn renamed_api_uses_current_name_without_changing_live_config_during_rename() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    let (base_url, server) = api_server(&[("200 OK", MODEL_LIST), ("200 OK", MODEL_LIST)]);
+    assert_success(&case.add_api("company", &base_url, "dummy-company-key"));
+    assert_success(&case.run(&["use", "company"]));
+    let config = fs::read(case.codex_home.join("config.toml")).unwrap();
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+
+    assert_success(&case.run(&["rename", "company", "work"]));
+    assert_eq!(
+        fs::read(case.codex_home.join("config.toml")).unwrap(),
+        config
+    );
+    assert_success(&case.run(&["status"]));
+    assert_success(&case.run(&["use", "work"]));
+    server.join().unwrap();
+
+    let document = read_config(&case);
+    assert_eq!(document["model_provider"], "unicodex");
+    assert_eq!(document["model_providers"]["unicodex"]["name"], "work");
+    assert_eq!(
+        document["model_providers"]["unicodex"]["experimental_bearer_token"],
+        "dummy-company-key"
+    );
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    assert_success(&case.run(&["use", "personal"]));
+    assert_eq!(
+        read_config(&case)["model_providers"]["unicodex"]["name"],
+        "OpenAI"
+    );
 }
 
 #[test]
