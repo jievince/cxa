@@ -347,37 +347,41 @@ default.
 
 ```text
 $ cxa list
-1. personal · Pro 20x  [selected]
-    personal@example.com · updated just now
-    Codex
-      Weekly   [█████████████░░░]   82% left  resets in 6d 11h
-    Codex Spark
-      5-hour   [█████████░░░░░░░]   59% left  resets in 4h 12m
-      Weekly   [███████████████░]   91% left  resets in 6d 23h
+* 1. personal · Pro 20x
+     personal@example.com · updated just now
+     Codex
+       Weekly   [█████████████░░░]   82% left  resets in 6d 11h
+     Codex Spark
+       5-hour   [█████████░░░░░░░]   59% left  resets in 4h 12m
+       Weekly   [███████████████░]   91% left  resets in 6d 23h
 
-2. work · Pro 20x
-    work@example.com · updated just now
-    Codex
-      Weekly   [██████░░░░░░░░░░]   37% left  resets in 3d 8h
-    Codex Spark
-      5-hour   [████████████████]  100% left  resets in 4h 48m
-      Weekly   [██████████████░░]   88% left  resets in 5d 17h
+  2. work · Pro 20x
+     work@example.com · updated just now
+     Codex
+       Weekly   [██████░░░░░░░░░░]   37% left  resets in 3d 8h
+     Codex Spark
+       5-hour   [████████████████]  100% left  resets in 4h 48m
+       Weekly   [██████████████░░]   88% left  resets in 5d 17h
 
-3. company · CPA API key
-    https://cpa.example.com/v1 · updated just now
-    Core · USD
-      Weekly   [██████████████░░]   90% left  resets in 5d 7h
-      $360.00 / $400.00 left
+  3. company · CPA API key
+     https://cpa.example.com/v1 · updated just now
+     Core · USD
+       Weekly   [██████████████░░]   90% left  resets in 5d 7h
+       $360.00 / $400.00 left
 
 $ cxa work
 ✓ Account work (work@example.com) is now selected.
 ! Restart Codex or ChatGPT before expecting an existing session to use this account.
 ```
 
-`[selected]` marks the account selected in Codex's credential and connection
-files; running Codex processes still require a restart after switching. Each
+The leftmost `*` and a bold green heading mark the account selected in Codex's
+credential and connection files. The marker remains visible without colors;
+running Codex processes still require a restart after switching. Each
 heading shows the display position, unique name, and plan or account type.
 The next line shows the email or API endpoint and the quota update time.
+The marker and right-aligned numbers form a separate gutter. Account details
+and quota groups align with the name column; quota rows are indented two more
+spaces. All entries share the same alignment, including lists of 10 or more.
 
 When quota data is stale, an interactive terminal immediately lists every
 account with an animated loading indicator, fetches them in parallel, and fills

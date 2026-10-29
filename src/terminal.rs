@@ -53,35 +53,40 @@ pub fn usage_recency(usage: Option<&UsageRecord>, now: i64) -> Option<String> {
 }
 
 pub fn print_usage(usage: Option<&UsageRecord>, now: i64) {
-    print!("{}", render_usage(usage, now));
+    print!("{}", render_usage(usage, now, 4));
 }
 
-pub fn render_usage(usage: Option<&UsageRecord>, now: i64) -> String {
+pub fn render_usage(usage: Option<&UsageRecord>, now: i64, indent: usize) -> String {
     let mut output = String::new();
+    let padding = " ".repeat(indent);
     let Some(usage) = usage else {
-        writeln!(output, "    {WARNING}Usage unknown{WARNING:#}").unwrap();
+        writeln!(output, "{padding}{WARNING}Usage unknown{WARNING:#}").unwrap();
         return output;
     };
     if let Some(error) = &usage.error {
-        writeln!(output, "    {WARNING}{error}{WARNING:#}").unwrap();
+        writeln!(output, "{padding}{WARNING}{error}{WARNING:#}").unwrap();
         return output;
     }
     if let Some(error) = &usage.refresh_error {
         writeln!(
             output,
-            "    {WARNING}Last refresh failed: {error} Showing cached quota.{WARNING:#}"
+            "{padding}{WARNING}Last refresh failed: {error} Showing cached quota.{WARNING:#}"
         )
         .unwrap();
     }
     if let Some(cpa) = &usage.cpa {
         if cpa.unlimited {
-            writeln!(output, "    {SUCCESS}CPA allocation  Unlimited{SUCCESS:#}").unwrap();
+            writeln!(
+                output,
+                "{padding}{SUCCESS}CPA allocation  Unlimited{SUCCESS:#}"
+            )
+            .unwrap();
         }
         for dimension in &cpa.dimensions {
             let style = usage_style(dimension.remaining_percent);
             writeln!(
                 output,
-                "    {EMPHASIS}{} · {}{EMPHASIS:#}",
+                "{padding}{EMPHASIS}{} · {}{EMPHASIS:#}",
                 dimension.name_label(),
                 dimension.metric_label()
             )
@@ -93,18 +98,24 @@ pub fn render_usage(usage: Option<&UsageRecord>, now: i64) -> String {
                 dimension.remaining_percent,
                 dimension.resets_at,
                 now,
+                indent,
             );
-            writeln!(output, "      {style}{}{style:#}", dimension.amount_label()).unwrap();
+            writeln!(
+                output,
+                "{padding}  {style}{}{style:#}",
+                dimension.amount_label()
+            )
+            .unwrap();
         }
         return output;
     }
     if usage.buckets.is_empty() {
-        writeln!(output, "    {WARNING}No quota data{WARNING:#}").unwrap();
+        writeln!(output, "{padding}{WARNING}No quota data{WARNING:#}").unwrap();
         return output;
     }
 
     for bucket in &usage.buckets {
-        write_bucket(&mut output, bucket, now);
+        write_bucket(&mut output, bucket, now, indent);
     }
     output
 }
@@ -388,19 +399,26 @@ impl Drop for FetchSpinner {
     }
 }
 
-fn write_bucket(output: &mut String, bucket: &UsageBucket, now: i64) {
+fn write_bucket(output: &mut String, bucket: &UsageBucket, now: i64, indent: usize) {
     let name = bucket_name(bucket);
+    let padding = " ".repeat(indent);
     if bucket.exhausted_now(now) {
-        writeln!(output, "    {ERROR}{name}  EXHAUSTED{ERROR:#}").unwrap();
+        writeln!(output, "{padding}{ERROR}{name}  EXHAUSTED{ERROR:#}").unwrap();
     } else {
-        writeln!(output, "    {EMPHASIS}{name}{EMPHASIS:#}").unwrap();
+        writeln!(output, "{padding}{EMPHASIS}{name}{EMPHASIS:#}").unwrap();
     }
     for (fallback, window) in bucket.windows() {
-        write_window(output, fallback, window, now);
+        write_window(output, fallback, window, now, indent);
     }
 }
 
-fn write_window(output: &mut String, fallback: &str, window: &UsageWindow, now: i64) {
+fn write_window(
+    output: &mut String,
+    fallback: &str,
+    window: &UsageWindow,
+    now: i64,
+    indent: usize,
+) {
     let label = window_label(fallback, window.window_minutes);
     write_quota_window(
         output,
@@ -408,6 +426,7 @@ fn write_window(output: &mut String, fallback: &str, window: &UsageWindow, now: 
         window.remaining_percent(),
         window.resets_at,
         now,
+        indent,
     );
 }
 
@@ -417,6 +436,7 @@ fn write_quota_window(
     remaining: Option<f64>,
     resets_at: Option<i64>,
     now: i64,
+    indent: usize,
 ) {
     let percent = remaining.map(format_percent);
     let bar = progress_bar(remaining);
@@ -425,9 +445,10 @@ fn write_quota_window(
     let reset = resets_at
         .map(|reset| reset_label(reset, now))
         .unwrap_or_else(|| "reset time not provided".into());
+    let padding = " ".repeat(indent + 2);
     writeln!(
         output,
-        "      {MUTED}{label:<8}{MUTED:#} {style}{bar}{style:#} {style}{percent:>4}% left{style:#}{MUTED}  {reset}{MUTED:#}"
+        "{padding}{MUTED}{label:<8}{MUTED:#} {style}{bar}{style:#} {style}{percent:>4}% left{style:#}{MUTED}  {reset}{MUTED:#}"
     )
     .unwrap();
 }
@@ -574,7 +595,7 @@ mod tests {
         }))
         .unwrap();
         let now = resets_at - 3 * 86400 - 8 * 3600;
-        let output = render_usage(Some(&usage), now);
+        let output = render_usage(Some(&usage), now, 4);
         assert!(output.contains("Core · USD"));
         assert!(output.contains("$399.00 / $400.00 left"));
         assert!(output.contains("resets in 3d 8h"));
@@ -588,6 +609,7 @@ mod tests {
                 resets_at: Some(resets_at),
             },
             now,
+            4,
         );
         assert_eq!(output.lines().nth(1), chatgpt_row.lines().next());
         assert_eq!(output.lines().count(), 3);
@@ -605,7 +627,7 @@ mod tests {
             }]}
         }))
         .unwrap();
-        let output = render_usage(Some(&usage), 1000);
+        let output = render_usage(Some(&usage), 1000, 4);
         assert!(output.contains("Window 1 · USD"));
         assert!(output.contains("reset time not provided"));
         assert!(!output.contains("Weekly"));
@@ -614,8 +636,8 @@ mod tests {
     #[test]
     fn quota_rows_align_integer_and_fractional_remaining_percentages() {
         let mut output = String::new();
-        write_quota_window(&mut output, "Weekly", Some(100.0), Some(2000), 1000);
-        write_quota_window(&mut output, "Weekly", Some(99.2), Some(2000), 1000);
+        write_quota_window(&mut output, "Weekly", Some(100.0), Some(2000), 1000, 4);
+        write_quota_window(&mut output, "Weekly", Some(99.2), Some(2000), 1000, 4);
         let rows: Vec<_> = output.lines().collect();
         assert_eq!(rows[0].find('%'), rows[1].find('%'));
         assert_eq!(rows[0].find("resets"), rows[1].find("resets"));
@@ -632,7 +654,7 @@ mod tests {
             }]}
         }))
         .unwrap();
-        let output = render_usage(Some(&usage), 1000);
+        let output = render_usage(Some(&usage), 1000, 4);
         assert!(output.contains("Core · Requests"));
         assert!(output.contains("--% left"));
         assert!(output.contains("Unlimited"));

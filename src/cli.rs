@@ -531,7 +531,7 @@ impl App {
         } else {
             WARNING
         };
-        println!("    {ACCENT}Credential{ACCENT:#}  {style}{credential}{style:#}");
+        println!("  {ACCENT}Credential{ACCENT:#}  {style}{credential}{style:#}");
         if session_changed {
             restart_notice();
         }
@@ -927,6 +927,19 @@ fn interval_label(seconds: u64) -> String {
     }
 }
 
+#[derive(Clone, Copy)]
+struct ListPosition {
+    number: usize,
+    width: usize,
+}
+
+impl ListPosition {
+    fn content_indent(self) -> usize {
+        // The marker, number, period, and spaces form a gutter outside account content.
+        self.width + 4
+    }
+}
+
 fn profile_list(
     profiles: &[Profile],
     selected: Option<u32>,
@@ -935,7 +948,12 @@ fn profile_list(
     frame: usize,
 ) -> String {
     let mut output = String::new();
+    let width = profiles.len().to_string().len();
     for (index, (profile, state)) in profiles.iter().zip(states).enumerate() {
+        let position = ListPosition {
+            number: index + 1,
+            width,
+        };
         if index > 0 {
             writeln!(output).unwrap();
         }
@@ -945,7 +963,7 @@ fn profile_list(
                     &mut output,
                     profile,
                     selected == Some(profile.slot),
-                    index + 1,
+                    position,
                     frame,
                 );
             }
@@ -953,7 +971,7 @@ fn profile_list(
                 output.push_str(&profile_output(
                     profile,
                     selected == Some(profile.slot),
-                    Some(index + 1),
+                    Some(position),
                     usage.as_ref(),
                     now,
                 ));
@@ -967,20 +985,21 @@ fn write_loading_profile(
     output: &mut String,
     profile: &Profile,
     selected: bool,
-    ordinal: usize,
+    position: ListPosition,
     frame: usize,
 ) {
     output.push_str(&profile_header(
         profile,
         selected,
-        Some(ordinal),
+        Some(position),
         None,
         now_epoch(),
     ));
     let spinner = LOADING_FRAMES[frame % LOADING_FRAMES.len()];
+    let padding = " ".repeat(position.content_indent());
     writeln!(
         output,
-        "    {ACCENT}{spinner}{ACCENT:#} {MUTED}loading{MUTED:#}"
+        "{padding}{ACCENT}{spinner}{ACCENT:#} {MUTED}loading{MUTED:#}"
     )
     .unwrap();
 }
@@ -1012,7 +1031,7 @@ fn refresh_usage_for_config(
 fn profile_header(
     profile: &Profile,
     selected: bool,
-    ordinal: Option<usize>,
+    position: Option<ListPosition>,
     usage: Option<&UsageRecord>,
     now: i64,
 ) -> String {
@@ -1027,24 +1046,29 @@ fn profile_header(
         None
     };
     // Ordinals are presentation positions, never stored account identities or selectors.
-    if let Some(ordinal) = ordinal {
-        write!(output, "{MUTED}{ordinal}.{MUTED:#} ").unwrap();
+    let style = if selected { SUCCESS } else { EMPHASIS };
+    let marker = if selected { "*" } else { " " };
+    write!(output, "{style}{marker} ").unwrap();
+    if let Some(position) = position {
+        write!(
+            output,
+            "{:>width$}. ",
+            position.number,
+            width = position.width
+        )
+        .unwrap();
     }
-    write!(
-        output,
-        "{EMPHASIS}{}{EMPHASIS:#} {MUTED}· {plan}{MUTED:#}",
-        profile.name
-    )
-    .unwrap();
     if selected {
-        write!(output, "  {ACCENT}[selected]{ACCENT:#}").unwrap();
+        writeln!(output, "{} · {plan}{style:#}", profile.name).unwrap();
+    } else {
+        writeln!(output, "{}{style:#} {MUTED}· {plan}{MUTED:#}", profile.name).unwrap();
     }
-    writeln!(output).unwrap();
     let identity = match &profile.account {
         Account::Chatgpt(_) => profile.label(),
         Account::Api(account) => &account.base_url,
     };
-    write!(output, "    {MUTED}{identity}").unwrap();
+    let padding = " ".repeat(position.map_or(2, ListPosition::content_indent));
+    write!(output, "{padding}{MUTED}{identity}").unwrap();
     if let Some(recency) = recency {
         write!(output, " · {recency}").unwrap();
     }
@@ -1055,22 +1079,24 @@ fn profile_header(
 fn profile_output(
     profile: &Profile,
     selected: bool,
-    ordinal: Option<usize>,
+    position: Option<ListPosition>,
     usage: Option<&UsageRecord>,
     now: i64,
 ) -> String {
-    let mut output = profile_header(profile, selected, ordinal, usage, now);
+    let mut output = profile_header(profile, selected, position, usage, now);
+    let indent = position.map_or(2, ListPosition::content_indent);
+    let padding = " ".repeat(indent);
     if let Account::Api(account) = &profile.account {
         if let Some(website) = &account.website {
-            writeln!(output, "    Website  {website}").unwrap();
+            writeln!(output, "{padding}Website  {website}").unwrap();
         }
     }
     if profile.supports_usage() {
-        output.push_str(&render_usage(usage, now));
+        output.push_str(&render_usage(usage, now, indent));
     } else {
         writeln!(
             output,
-            "    {MUTED}Quota query disabled (generic API).{MUTED:#}"
+            "{padding}{MUTED}Quota query disabled (generic API).{MUTED:#}"
         )
         .unwrap();
     }

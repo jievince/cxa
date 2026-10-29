@@ -229,20 +229,22 @@ Authorization: Bearer <CPA API key>
 两类账号使用相同的窗口显示布局；CPA 额外显示分配额度的数值：
 
 ```text
-1. personal · Plus
-    personal@example.com · updated just now
-    Codex
-      5-hour   [████████████████]  100% left  resets in 4h 58m
-      Weekly   [████████████████]  100% left  resets in 6d 17h
+  1. personal · Plus
+     personal@example.com · updated just now
+     Codex
+       5-hour   [████████████████]  100% left  resets in 4h 58m
+       Weekly   [████████████████]  100% left  resets in 6d 17h
 
-2. company · CPA API key  [selected]
-    https://cpa.example.com/v1 · updated just now
-    Core · USD
-      Weekly   [██████████████░░]   90% left  resets in 5d 7h
-      $360.00 / $400.00 left
+* 2. company · CPA API key
+     https://cpa.example.com/v1 · updated just now
+     Core · USD
+       Weekly   [██████████████░░]   90% left  resets in 5d 7h
+       $360.00 / $400.00 left
 ```
 
-`[selected]` 表示 Codex 凭据和连接文件中当前选中的账号，运行中的 Codex 进程仍需在切换后重启。每块标题显示展示序号、唯一名称、套餐或账号类型，下一行显示邮箱或 API 地址及额度更新时间。HTTP 错误、连接错误和响应格式错误会显示为查询失败，不会被当成无限额度。刷新失败时，之前成功取得的数据会明确标为缓存并显示刷新错误。
+最左侧的 `*` 和绿色加粗标题表示 Codex 凭据和连接文件中当前选中的账号；关闭颜色时仍保留 `*`。运行中的 Codex 进程仍需在切换后重启。每块标题显示展示序号、唯一名称、套餐或账号类型，下一行显示邮箱或 API 地址及额度更新时间。
+
+标记和右对齐的序号占据独立的左侧区域。邮箱、地址和额度分组与名称列对齐，具体额度再向内缩进两个空格。所有条目采用相同列宽，超过 9 项时也保持对齐。HTTP 错误、连接错误和响应格式错误会显示为查询失败，不会被当成无限额度。刷新失败时，之前成功取得的数据会明确标为缓存并显示刷新错误。
 
 查询不发送推理请求。结果默认缓存 120 秒；交互终端会并行加载各账号数据，重定向输出则在加载完成后一次性输出。ChatGPT token 刷新由 Codex 负责，`cxa` 校验账号身份后回存到同一个账号，不用其他账号的凭据覆盖它。
 

@@ -956,10 +956,7 @@ fn status_infers_selection_when_codex_changes_to_an_enrolled_account() {
     let output = case.run(&["status"]);
 
     assert_success(&output);
-    assert!(
-        String::from_utf8_lossy(&output.stdout)
-            .contains("two · ChatGPT  [selected]\n    two@example.com")
-    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("* two · ChatGPT\n  two@example.com"));
 }
 
 #[test]
@@ -1539,9 +1536,7 @@ fn custom_provider_switch_round_trip_preserves_general_settings_and_rotated_oaut
     );
     let output = case.run(&["list"]);
     assert_success(&output);
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("2. company · CPA API key  [selected]")
-    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("* 2. company · CPA API key"));
 
     // A setting edited during company mode must not be overwritten by the saved route.
     let path = case.codex_home.join("config.toml");
@@ -1748,7 +1743,7 @@ fn generic_gateway_switch_and_status_preserve_oauth_without_querying_quota() {
         let output = process.arg(command).output().unwrap();
         assert_success(&output);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("gateway · API key  [selected]"));
+        assert!(stdout.contains("gateway · API key"));
         assert!(stdout.contains("Website  https://gateway.example.com/usage"));
         assert!(stdout.contains("Quota query disabled (generic API)."));
         assert!(!stdout.contains("CPA allocation"));
@@ -2134,8 +2129,7 @@ fn builtin_openai_switch_keeps_default_provider_and_restores_login() {
         auth
     );
     assert!(
-        String::from_utf8_lossy(&case.run(&["status"]).stdout)
-            .contains("company · CPA API key  [selected]")
+        String::from_utf8_lossy(&case.run(&["status"]).stdout).contains("* company · CPA API key")
     );
     assert_success(&case.run(&["personal"]));
     assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
@@ -2365,11 +2359,11 @@ fn names_replace_numeric_and_partial_selectors_without_changing_live_state() {
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("1. jax · ChatGPT  [selected]\n    jaxonblazers@example.com"),
+        stdout.contains("* 1. jax · ChatGPT\n     jaxonblazers@example.com"),
         "{stdout}"
     );
     assert!(
-        stdout.contains("2. work · CPA API key\n    https://example.com/v1"),
+        stdout.contains("  2. work · CPA API key\n     https://example.com/v1"),
         "{stdout}"
     );
     assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
@@ -2451,14 +2445,16 @@ fn list_numbers_are_contiguous_after_removal_and_never_select_accounts() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let headings: Vec<_> = stdout
         .lines()
-        .filter(|line| line.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .filter(|line| {
+            line.trim_start_matches(['*', ' '])
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit())
+        })
         .collect();
     assert_eq!(
         headings,
-        [
-            "1. second · ChatGPT  [selected]",
-            "2. company · CPA API key"
-        ]
+        ["* 1. second · ChatGPT", "  2. company · CPA API key"]
     );
     assert!(case.store.join("profile-2/auth.json").exists());
     assert!(case.store.join("profile-3/api.json").exists());
@@ -2473,7 +2469,25 @@ fn list_numbers_are_contiguous_after_removal_and_never_select_accounts() {
     assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
     let status = case.run(&["status"]);
     assert_success(&status);
-    assert!(String::from_utf8_lossy(&status.stdout).starts_with("second · ChatGPT  [selected]\n"));
+    assert!(String::from_utf8_lossy(&status.stdout).starts_with("* second · ChatGPT\n"));
+
+    for index in 1..=10 {
+        assert_success(&case.add_api(
+            &format!("relay-{index}"),
+            "https://relay.example.com/v1",
+            "dummy-key",
+        ));
+    }
+    let output = case.run(&["list"]);
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with("*  1. second · ChatGPT\n      second@example.com\n      Usage unknown")
+    );
+    assert!(stdout.contains(
+        "  12. relay-10 · CPA API key\n      https://relay.example.com/v1\n      Usage unknown"
+    ));
+    assert!(!stdout.contains("[selected]"));
 }
 
 #[test]
@@ -2668,7 +2682,7 @@ esac
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("75% left"));
-    assert!(stdout.contains("2. company · CPA API key  [selected]"));
+    assert!(stdout.contains("* 2. company · CPA API key"));
     assert!(stdout.contains("CPA allocation  Unlimited"));
     assert!(!stdout.contains("quota unavailable"));
     assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
