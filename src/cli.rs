@@ -1140,7 +1140,10 @@ fn restart_notice() {
         "{WARNING}!{WARNING:#} Restart Codex or ChatGPT before expecting an existing session to use this account."
     );
     println!(
-        "{MUTED}  Codex CLI:{MUTED:#} {ACCENT}codex app-server daemon restart{ACCENT:#}{MUTED}  ·  Desktop: quit and reopen{MUTED:#}"
+        "{MUTED}  Codex CLI:{MUTED:#} {ACCENT}codex app-server daemon restart{ACCENT:#}{MUTED}  ·  quit Codex Desktop first, reopen it after{MUTED:#}"
+    );
+    println!(
+        "{MUTED}  After a reboot:{MUTED:#} {ACCENT}codex app-server daemon start{ACCENT:#}{MUTED} before opening Codex Desktop{MUTED:#}"
     );
 }
 
