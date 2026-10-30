@@ -47,7 +47,7 @@ impl Config {
         let usage_ttl_seconds = env::var("CXA_USAGE_TTL")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or(120);
+            .unwrap_or(0);
         let skip_usage_refresh = env::var("CXA_SKIP_USAGE_REFRESH").as_deref() == Ok("1");
 
         Ok(Self {

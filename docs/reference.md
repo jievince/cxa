@@ -67,7 +67,7 @@ Before replacing live OAuth credentials, cxa saves their latest version. For bui
 - **CPA:** use the saved API key as a Bearer token for `GET /v0/resource/plugins/cpa-key-billing/subscription`. Strip a trailing `/v1` from the base URL, retain reverse-proxy path prefixes, and reject redirects. This is a server endpoint; cxa does not install a plugin. The service must expose it.
 - **Generic:** do not query quota. An optional website is displayed for manual checks.
 
-CPA group names, limits, periods, and reset times come from the response. `USD` means the assigned dollar budget, not a backend ChatGPT subscription's remaining quota. Missing reset times are not inferred. Query failures show an error and any cached result; they are not shown as unlimited quota. Cache lifetime defaults to 120 seconds.
+CPA group names, limits, periods, and reset times come from the response. `USD` means the assigned dollar budget, not a backend ChatGPT subscription's remaining quota. Missing reset times are not inferred. Query failures show an error and any cached result; they are not shown as unlimited quota. ChatGPT and CPA queries refresh on every `status` or `list` by default. Cached results remain available when a refresh fails.
 
 ## Troubleshooting and environment
 
@@ -80,7 +80,7 @@ Restart the Codex CLI or Desktop processes after switching: existing processes c
 | `CODEX_HOME` | Codex directory; default `~/.codex` |
 | `CXA_ACCOUNT_STORE` | Profile directory; default `~/.codex-auth`; must not overlap Codex home |
 | `CXA_CODEX_BIN` | Absolute path to an alternative Codex executable |
-| `CXA_USAGE_TTL` | Quota cache lifetime in seconds; default `120` |
+| `CXA_USAGE_TTL` | Quota cache lifetime in seconds; default `0` (refresh every time) |
 | `CXA_SKIP_USAGE_REFRESH=1` | Display cached quota without querying |
 
 Directory overrides must be absolute. `cxa watch --interval 30` changes the live refresh cadence; intervals must be at least 5 seconds. It is also available as `cxa list --watch`.

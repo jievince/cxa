@@ -67,7 +67,7 @@ experimental_bearer_token = "<saved key>"
 - **CPA**：用保存的 API key 作为 Bearer token，请求 `GET /v0/resource/plugins/cpa-key-billing/subscription`。从 base URL 去掉末尾 `/v1`，保留反代路径前缀，不跟随重定向。这是服务端接口，cxa 不安装插件，需服务端提供该接口。
 - **普通 API**：不查询额度；可显示用户填写的网站，供手动查询。
 
-CPA 分组名称、额度、周期和重置时间来自响应。`USD` 指分配的美元预算，不是底层 ChatGPT 订阅剩余额度。没有重置时间时不推算。查询失败会标明错误并显示已有缓存，不会按无限额度处理。默认缓存 120 秒。
+CPA 分组名称、额度、周期和重置时间来自响应。`USD` 指分配的美元预算，不是底层 ChatGPT 订阅剩余额度。没有重置时间时不推算。查询失败会标明错误并显示已有缓存，不会按无限额度处理。ChatGPT 和 CPA 默认每次 `status` 或 `list` 都实时刷新；刷新失败时保留缓存供查看。
 
 ## 排查与环境变量
 
@@ -80,7 +80,7 @@ Codex 必须使用文件凭据。若配置为其他方式，请在 `config.toml`
 | `CODEX_HOME` | Codex 目录，默认 `~/.codex` |
 | `CXA_ACCOUNT_STORE` | 账号目录，默认 `~/.codex-auth`，不得与 Codex home 重叠 |
 | `CXA_CODEX_BIN` | 其他 Codex 可执行文件的绝对路径 |
-| `CXA_USAGE_TTL` | 额度缓存秒数，默认 `120` |
+| `CXA_USAGE_TTL` | 额度缓存秒数，默认 `0`（每次刷新） |
 | `CXA_SKIP_USAGE_REFRESH=1` | 只显示缓存，不发起查询 |
 
 目录覆盖值必须是绝对路径。`cxa watch --interval 30` 设置持续刷新的间隔，最小为 5 秒；也可运行 `cxa list --watch`。
