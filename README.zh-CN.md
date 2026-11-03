@@ -78,7 +78,9 @@ cxa use company
 
 cxa 不修改顶层 `model_provider` ID，也不编辑会话 rollout 或数据库。切换会修改当前 provider 的连接字段：订阅使用官方 OAuth 连接，API 使用对应的 URL 和密钥。模型、推理强度、MCP、项目及无关配置保留。
 
-已有 `unicodex` 等自定义 provider 时，订阅模式的 `name` 写为 `OpenAI`，API 模式写为当前 cxa 账号名称。改名在下一次 `cxa use` 时同步到 provider。未设置自定义 provider 时继续使用内建 `openai`，通过 `openai_base_url` 接入中转。
+已有 `unicodex` 等自定义 provider 时，订阅模式的 `name` 写为 `OpenAI`，API 模式写为当前 cxa 账号名称。改名在下一次 `cxa use` 时同步到 provider。切换 API 会保留当前 ChatGPT 登录，已有登录时设置 `requires_openai_auth = true`，模型请求仍使用中转服务的独立密钥，从而保留手机配对等功能所需的账号身份。`cxa status` 分别显示推理连接和保留的 ChatGPT 登录。凭据损坏会阻止切换，仍在使用的 ChatGPT 账号受删除保护。
+
+仅使用 API 时，自定义 provider 的 `requires_openai_auth` 为 `false`。内建 `openai` 通过 `openai_base_url` 和 `auth.json` 支持纯 API 切换，已有 ChatGPT 登录时会拒绝覆盖。需要同时使用 ChatGPT 身份和中转推理时，请配置自定义 provider。旧版 cxa 更新后，重新运行 `cxa use NAME` 应用新配置，再重启 Codex。
 
 认证要求 Codex 使用 `file` 存储。密钥以 `0600` 权限保存在本地，不加密。切换后，已有 Codex 进程需要重启。中转服务须支持 Responses API 和 `/models`；cxa 在切换前检查服务公布的模型，但无法保证已有聊天所选的模型一定可用。
 

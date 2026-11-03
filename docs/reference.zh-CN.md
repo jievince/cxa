@@ -37,12 +37,12 @@ cxa 读取用户级 `config.toml`，不新增、删除或修改 `model_provider`
 | 切换目标 | 已有自定义 provider，例如 `unicodex` | 内建 `openai` |
 | --- | --- | --- |
 | ChatGPT | 设置 `name = "OpenAI"`、`wire_api = "responses"`、`requires_openai_auth = true`；删除 `base_url`、`env_key`、`experimental_bearer_token`、`auth` | 删除顶层 `openai_base_url` |
-| API | 设置 `name` 为当前 cxa 名称，以及 `base_url`、`wire_api = "responses"`、`requires_openai_auth = false`、`experimental_bearer_token`；删除 `env_key`、`auth` | 设置顶层 `openai_base_url` |
+| API | 设置 `name` 为当前 cxa 名称，以及 `base_url`、`wire_api = "responses"`、`experimental_bearer_token`；已有 ChatGPT 登录时设置 `requires_openai_auth = true`，否则为 `false`；删除 `env_key`、`auth` | 设置顶层 `openai_base_url`；已有 ChatGPT 登录时拒绝切换 |
 | 当前 `auth.json` | ChatGPT：写入所选 OAuth 凭据；API：保留原文件 | ChatGPT：写入所选 OAuth 凭据；API：写入 `OPENAI_API_KEY` |
 
 切换 ChatGPT 时，两种路径都会删除顶层 `openai_base_url`，明确使用官方连接，不恢复旧中转快照。`name` 只是显示名，写成 `OpenAI` 不会自动选用内建 provider。名称和连接变化时，provider ID 始终保留。
 
-例如，已有 `unicodex` 时选择名为 `company` 的 API 连接，对应的连接字段如下：
+例如，已有 `unicodex` 和 ChatGPT 登录时选择名为 `company` 的 API 连接，对应的连接字段如下：
 
 ```toml
 model_provider = "unicodex"
@@ -51,7 +51,7 @@ model_provider = "unicodex"
 name = "company"
 base_url = "https://gateway.example/v1"
 wire_api = "responses"
-requires_openai_auth = false
+requires_openai_auth = true
 experimental_bearer_token = "<saved key>"
 ```
 
@@ -59,7 +59,9 @@ experimental_bearer_token = "<saved key>"
 
 账号默认保存在 `~/.codex-auth`：OAuth 凭据位于 `profile-N/auth.json`，API 信息位于 `profile-N/api.json`，名称位于 `profile-N/name`。自定义 provider 的 API key 还会写入 `config.toml`；内建 `openai` 则写入 `auth.json`。连接状态和恢复日志也可能包含密钥。私有文件写入权限为 `0600`，这不等于加密。
 
-替换当前 OAuth 凭据前，cxa 会先回存其最新版本。使用内建 provider 切到 API 前，已有 ChatGPT 登录须先通过 `cxa init` 保存。多文件切换使用恢复日志，失败时回滚，中断后在下次运行恢复。若当前 API 连接字段被外部修改，cxa 会报告冲突，拒绝覆盖；请先切离该连接，再修改受管理字段。
+切换 API 沿用当前 ChatGPT 身份，不自动挑选其他保存的账号。需要更换身份时，先用 `cxa use NAME` 选择对应 ChatGPT 账号，再选择 API。模型请求优先使用中转服务明确配置的 Bearer 密钥。凭据文件不存在或仅含 API key 时使用纯 API 模式；ChatGPT 凭据损坏会报错，不自动关闭身份。token 过期不改变此策略，Codex 报认证失败时应重新登录。手机配对还受账号、工作区和应用可用性影响，保留身份不代表已经验证配对。`cxa status` 分别显示推理连接和 ChatGPT 登录。仍在使用的 ChatGPT 账号须先切换到另一个 ChatGPT 账号后才能删除。
+
+替换当前 OAuth 凭据前，cxa 会先回存其最新版本。内建 `openai` 在本切换机制下无法同时保留 ChatGPT 身份和中转凭据，需要此组合时请使用自定义 provider。多文件切换使用恢复日志，失败时回滚，中断后在下次运行恢复。若当前 API 连接字段被外部修改，cxa 会报告冲突，拒绝覆盖；请先切离该连接，再修改受管理字段。升级旧版 cxa 后，重新运行 `cxa use NAME`，连接和恢复快照会一起更新。
 
 ## 额度查询
 

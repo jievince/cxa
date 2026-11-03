@@ -78,7 +78,9 @@ List numbers are display positions, starting at 1; commands accept names only. T
 
 cxa never changes the top-level `model_provider` ID or edits session rollouts and databases. It does update the selected provider's connection settings: ChatGPT selects the official OAuth route; an API connection selects its URL and key. Models, reasoning settings, MCP servers, projects, and unrelated settings remain in place.
 
-With an existing custom provider such as `unicodex`, its `name` becomes `OpenAI` for ChatGPT or the current cxa account name for an API connection. Renaming takes effect in the provider on the next `cxa use`. Without a custom provider, cxa keeps built-in `openai` and uses `openai_base_url` for gateways.
+With an existing custom provider such as `unicodex`, its `name` becomes `OpenAI` for ChatGPT or the current cxa account name for an API connection. Renaming takes effect in the provider on the next `cxa use`. API switching preserves the current ChatGPT login and sets `requires_openai_auth = true` when one exists; model requests still use the gateway's independent key. This keeps the identity needed by features such as mobile pairing. `cxa status` shows the inference connection and retained ChatGPT login separately. Invalid credentials stop the switch, and the retained ChatGPT account is protected from removal.
+
+API-only users keep `requires_openai_auth = false` with custom providers. Built-in `openai` uses `openai_base_url` and `auth.json` for API-only switching; cxa refuses to replace a ChatGPT login on that route. Configure a custom provider to combine a ChatGPT identity with gateway inference. After updating an older cxa installation, run `cxa use NAME` again to apply the new connection settings, then restart Codex.
 
 Credentials require Codex's `file` store. Secrets are stored locally with mode `0600`, without encryption. Existing Codex processes need a restart after switching. Gateway support requires both the Responses API and `/models`; cxa checks advertised models before switching but cannot guarantee every model works in an existing chat.
 

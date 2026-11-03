@@ -1,11 +1,16 @@
 //! Explicit, offline compatibility check against an installed Codex app-server.
+use std::fmt::Write as _;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 use cxa::account_store::Store;
 use cxa::api_account::ApiAccount;
@@ -22,6 +27,7 @@ impl Server {
     fn start(binary: &Path, home: &Path) -> Self {
         let mut child = Command::new(binary)
             .arg("app-server")
+            .env("HOME", home)
             .env("CODEX_HOME", home)
             .env_remove("CODEX_ACCESS_TOKEN")
             .env_remove("CODEX_API_KEY")
@@ -82,6 +88,161 @@ impl Server {
             }
         }
     }
+}
+
+#[test]
+#[ignore = "set CXA_REAL_CODEX_BIN and run explicitly; uses only isolated homes and dummy keys"]
+fn actual_codex_preserves_chatgpt_identity_and_uses_only_the_gateway_key_for_inference() {
+    let binary = std::env::var_os("CXA_REAL_CODEX_BIN").expect("CXA_REAL_CODEX_BIN is required");
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(
+        home.join("config.toml"),
+        r#"model_provider = "unicodex"
+model = "gpt-6.1-sol"
+cli_auth_credentials_store = "file"
+chatgpt_base_url = "http://127.0.0.1:9"
+[model_providers.unicodex]
+name = "OpenAI"
+requires_openai_auth = true
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+"#,
+    )
+    .unwrap();
+    let claims = json!({
+        "email": "personal@example.invalid", "exp": 4102444800u64,
+        "https://api.openai.com/auth": {
+            "chatgpt_user_id": "personal", "chatgpt_account_id": "personal",
+            "chatgpt_plan_type": "plus"
+        }
+    });
+    let token = format!(
+        "header.{}.signature",
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+    );
+    let auth = serde_json::to_vec(&json!({
+        "auth_mode": "chatgpt", "last_refresh": chrono::Utc::now().to_rfc3339(),
+        "tokens": {"id_token": token, "access_token": "dummy-chatgpt-secret",
+                   "refresh_token": "dummy-refresh", "account_id": "personal"}
+    }))
+    .unwrap();
+    fs::write(home.join("auth.json"), &auth).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let store = Store::new(Config {
+        codex_home: home.clone(),
+        account_store: root.path().join("accounts"),
+        switch_lock: root.path().join("switch.lock"),
+        session_auth: home.join("auth.json"),
+        codex_binary: None,
+        usage_ttl_seconds: 0,
+        skip_usage_refresh: true,
+    });
+    let _lock = store.lock().unwrap();
+    let profile = store
+        .enroll_api(
+            ApiAccount::new(
+                "company".into(),
+                base_url,
+                "dummy-company-key".into(),
+                cxa::api_account::ApiType::Generic,
+                None,
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+    store.select(profile.slot).unwrap();
+    assert_eq!(fs::read(home.join("auth.json")).unwrap(), auth);
+    let mut server = Server::start(Path::new(&binary), &home);
+    let status = server.request(
+        1,
+        "getAuthStatus",
+        json!({"includeToken":false, "refreshToken":false}),
+    );
+    assert_eq!(status["authMethod"], "chatgpt");
+    assert_eq!(status["requiresOpenaiAuth"], true);
+    drop(server);
+
+    let gateway = thread::spawn(move || {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let (mut stream, _) = loop {
+            match listener.accept() {
+                Ok(connection) => break connection,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < deadline =>
+                {
+                    thread::sleep(Duration::from_millis(10))
+                }
+                Err(error) => panic!("Codex did not connect to the gateway: {error}"),
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut headers = String::new();
+        loop {
+            let mut line = String::new();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            headers.push_str(&line);
+            if line == "\r\n" {
+                break;
+            }
+        }
+        let length: usize = headers
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                    .map(|length| length.trim().parse().unwrap())
+            })
+            .unwrap();
+        reader.read_exact(&mut vec![0; length]).unwrap();
+        let message = json!({"id":"msg_probe", "type":"message", "role":"assistant", "status":"completed",
+            "content":[{"type":"output_text", "text":"OK", "annotations":[]}]});
+        let events = [
+            json!({"type":"response.created", "response":{"id":"resp_probe", "status":"in_progress", "output":[]}}),
+            json!({"type":"response.output_item.added", "output_index":0, "item":{"id":"msg_probe", "type":"message", "role":"assistant", "content":[]}}),
+            json!({"type":"response.output_text.delta", "item_id":"msg_probe", "output_index":0, "content_index":0, "delta":"OK"}),
+            json!({"type":"response.output_item.done", "output_index":0, "item":message}),
+            json!({"type":"response.completed", "response":{"id":"resp_probe", "status":"completed", "output":[message],
+                "usage":{"input_tokens":1, "output_tokens":1, "total_tokens":2}}}),
+        ];
+        let mut body = String::new();
+        for event in events {
+            writeln!(body, "data: {event}\n").unwrap();
+        }
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        headers
+    });
+    let output = Command::new(&binary)
+        .args(["exec", "--skip-git-repo-check", "--json", "Reply with OK."])
+        .current_dir(&home)
+        .env("HOME", root.path())
+        .env("CODEX_HOME", &home)
+        .env_remove("CODEX_ACCESS_TOKEN")
+        .env_remove("CODEX_API_KEY")
+        .env_remove("OPENAI_API_KEY")
+        .output()
+        .unwrap();
+    let headers = gateway.join().unwrap().to_ascii_lowercase();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(headers.starts_with("post /v1/responses "));
+    assert!(headers.contains("authorization: bearer dummy-company-key\r\n"));
+    assert!(!headers.contains("dummy-chatgpt-secret"));
+    assert!(!headers.contains("chatgpt-account-id:"));
 }
 
 impl Drop for Server {

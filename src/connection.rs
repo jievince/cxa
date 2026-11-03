@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use toml_edit::{DocumentMut, Item, Table, value};
 
-use crate::account_store::{Account, Profile, Store};
+use crate::account_store::{Account, Profile};
 use crate::api_account::ApiAccount;
 use crate::auth::AuthDocument;
 use crate::config::Config;
@@ -219,6 +219,24 @@ pub fn copy_oauth_config(config: &Config, destination: &Path) -> Result<()> {
     atomic_write(destination, document.to_string().as_bytes(), 0o600)
 }
 
+pub fn current_chatgpt(config: &Config) -> Result<Option<AuthDocument>> {
+    let Some(bytes) = read_optional(&config.session_auth)? else {
+        return Ok(None);
+    };
+    let raw: Value =
+        serde_json::from_slice(&bytes).map_err(|error| Error::json(&config.session_auth, error))?;
+    if raw.get("tokens").is_none_or(Value::is_null)
+        && raw.get("auth_mode").is_none_or(|mode| mode == "apikey")
+        && raw
+            .get("OPENAI_API_KEY")
+            .and_then(Value::as_str)
+            .is_some_and(|key| !key.is_empty())
+    {
+        return Ok(None);
+    }
+    AuthDocument::read(&config.session_auth).map(Some)
+}
+
 pub fn select(config: &Config, profile: &Profile) -> Result<()> {
     let existing = read_state(config)?;
     let mut document = read_document(config)?;
@@ -242,15 +260,10 @@ pub fn select(config: &Config, profile: &Profile) -> Result<()> {
             )
         }
         Account::Api(account) => {
+            let chatgpt = current_chatgpt(config)?;
             if provider == "openai" {
-                if state.api.is_none() && config.session_auth.exists() {
-                    let current = AuthDocument::read(&config.session_auth)?;
-                    if Store::new(config.clone())
-                        .slot_for_identity(&current.identity)?
-                        .is_none()
-                    {
-                        return Err(Error::Message("Import the current ChatGPT login with `cxa init` before switching to an API account.".into()));
-                    }
+                if chatgpt.is_some() {
+                    return Err(Error::Message("The built-in openai provider cannot preserve the current ChatGPT login while using an API key. Configure a custom model_provider before switching; nothing was changed.".into()));
                 }
                 document["openai_base_url"] = value(&account.base_url);
             } else {
@@ -267,12 +280,18 @@ pub fn select(config: &Config, profile: &Profile) -> Result<()> {
                                 .into(),
                         )
                     })?;
+                if chatgpt.is_none()
+                    && state.api.is_some()
+                    && table.get("requires_openai_auth").and_then(Item::as_bool) == Some(true)
+                {
+                    return Err(Error::Message("The retained ChatGPT login is missing. Sign in again before switching API connections; nothing was changed.".into()));
+                }
                 table.remove("env_key");
                 table.remove("auth");
                 table.insert("name", value(&profile.name));
                 table.insert("base_url", value(&account.base_url));
                 table.insert("wire_api", value("responses"));
-                table.insert("requires_openai_auth", value(false));
+                table.insert("requires_openai_auth", value(chatgpt.is_some()));
                 table.insert("experimental_bearer_token", value(&account.api_key));
             }
             state.api = Some(AppliedApi {

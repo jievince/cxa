@@ -527,6 +527,19 @@ impl App {
             WARNING
         };
         println!("  {ACCENT}Credential{ACCENT:#}  {style}{credential}{style:#}");
+        if matches!(profile.account, Account::Api(_)) {
+            println!("  {ACCENT}Inference{ACCENT:#}  {}", profile.name);
+            let login = match connection::current_chatgpt(&self.store.config)? {
+                Some(auth) => self
+                    .store
+                    .slot_for_identity(&auth.identity)?
+                    .map(|slot| self.store.profile(slot).map(|profile| profile.name))
+                    .transpose()?
+                    .unwrap_or_else(|| auth.identity.label().to_owned()),
+                None => "none (API-only)".into(),
+            };
+            println!("  {ACCENT}ChatGPT login{ACCENT:#}  {login}");
+        }
         if session_changed {
             restart_notice();
         }

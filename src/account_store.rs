@@ -555,9 +555,12 @@ impl Store {
             .ok()
             .zip(dir.canonicalize().ok())
             .is_some_and(|(session, directory)| session.starts_with(directory));
-        // API mode can leave a copied OAuth bundle in auth.json. Its identity
-        // is not the active account; only a symlink dependency needs protection.
-        if self.selected()? == Some(profile.slot) || session_points_inside {
+        let is_chatgpt_login = match &profile.account {
+            Account::Chatgpt(auth) => connection::current_chatgpt(&self.config)?
+                .is_some_and(|session| session.identity.same_account(&auth.identity)),
+            Account::Api(_) => false,
+        };
+        if self.selected()? == Some(profile.slot) || session_points_inside || is_chatgpt_login {
             return Err(Error::Message(format!(
                 "Account {} ({}) is selected or still referenced by Codex credentials. Switch to another ChatGPT account before removing it; nothing was removed.",
                 profile.name,

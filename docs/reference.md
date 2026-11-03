@@ -37,12 +37,12 @@ cxa reads the user-level `config.toml`. It never inserts, deletes, or changes `m
 | Selection | Existing custom provider, e.g. `unicodex` | Built-in `openai` |
 | --- | --- | --- |
 | ChatGPT | Set `name = "OpenAI"`, `wire_api = "responses"`, `requires_openai_auth = true`; remove `base_url`, `env_key`, `experimental_bearer_token`, `auth` | Remove top-level `openai_base_url` |
-| API | Set `name` to the current cxa name, `base_url`, `wire_api = "responses"`, `requires_openai_auth = false`, `experimental_bearer_token`; remove `env_key`, `auth` | Set top-level `openai_base_url` |
+| API | Set `name` to the current cxa name, `base_url`, `wire_api = "responses"`, `experimental_bearer_token`; set `requires_openai_auth = true` when a ChatGPT login is present, otherwise `false`; remove `env_key`, `auth` | Set top-level `openai_base_url`; reject switching if a ChatGPT login is present |
 | Live `auth.json` | ChatGPT: install selected OAuth bundle. API: leave the file in place | ChatGPT: install selected OAuth bundle. API: write `OPENAI_API_KEY` |
 
 ChatGPT selection removes top-level `openai_base_url` for either route. It constructs the official connection rather than restoring a previous relay snapshot. `name` is a display label; it does not select built-in OpenAI. The provider ID stays fixed when names or connections change.
 
-For example, selecting an API connection named `company` with an existing `unicodex` provider produces these connection fields:
+For example, selecting an API connection named `company` with an existing `unicodex` provider and ChatGPT login produces these connection fields:
 
 ```toml
 model_provider = "unicodex"
@@ -51,7 +51,7 @@ model_provider = "unicodex"
 name = "company"
 base_url = "https://gateway.example/v1"
 wire_api = "responses"
-requires_openai_auth = false
+requires_openai_auth = true
 experimental_bearer_token = "<saved key>"
 ```
 
@@ -59,7 +59,9 @@ Unrelated fields and their formatting remain in the live document, including edi
 
 Saved profiles live in `~/.codex-auth`: OAuth bundles in `profile-N/auth.json`, API details in `profile-N/api.json`, names in `profile-N/name`. With a custom API provider, a key copy is also written into `config.toml`; built-in `openai` uses `auth.json` instead. Connection state and recovery journals may contain secrets. Private files are written with mode `0600`; permissions are not encryption.
 
-Before replacing live OAuth credentials, cxa saves their latest version. For built-in API switching, an existing ChatGPT login must first be imported with `cxa init`. Switches use a recovery journal to restore previous files on failure or recover an interrupted switch on the next run. If an active API connection was edited outside cxa, switching reports a conflict instead of overwriting it. Switch away before editing managed connection fields.
+API switching retains the current ChatGPT identity; it never chooses an arbitrary saved account. Select a different ChatGPT account with `cxa use NAME` before selecting an API. The gateway's explicit bearer token takes precedence for model requests. Missing or API-key-only credentials select API-only mode; malformed ChatGPT credentials cause an error instead of disabling the identity. Token expiry does not change this policy: renew the login when Codex reports an authentication failure. Mobile pairing also depends on account, workspace, and application availability; preserving the identity does not verify pairing. `cxa status` shows both the inference connection and ChatGPT login. The retained ChatGPT account cannot be removed until another ChatGPT account is selected.
+
+Before replacing live OAuth credentials, cxa saves their latest version. Built-in `openai` cannot combine gateway credentials with a retained ChatGPT identity through this switching mechanism, so use a custom provider for that combination. Switches use a recovery journal to restore previous files on failure or recover an interrupted switch on the next run. If an active API connection was edited outside cxa, switching reports a conflict instead of overwriting it. Switch away before editing managed connection fields. To update a connection created by an older cxa version, run `cxa use NAME` again; the connection and its recovery snapshot are updated together.
 
 ## Quota queries
 

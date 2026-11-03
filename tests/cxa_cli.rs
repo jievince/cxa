@@ -622,7 +622,7 @@ fn remove_saved_oauth_and_api_accounts_preserves_live_login_config_and_sessions(
 }
 
 #[test]
-fn remove_allows_inactive_oauth_in_api_mode_and_preserves_switch_back() {
+fn remove_protects_the_chatgpt_login_while_using_an_api() {
     let case = Case::new();
     case.seed("personal@example.com", "personal", "personal");
     fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
@@ -639,8 +639,8 @@ fn remove_allows_inactive_oauth_in_api_mode_and_preserves_switch_back() {
     let output = case.run(&["remove", "company", "--yes"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("still referenced"));
-    assert_success(&case.run(&["remove", "personal", "--yes"]));
-    assert!(!case.store.join("profile-1").exists());
+    assert!(!case.run(&["remove", "personal", "--yes"]).status.success());
+    assert!(case.store.join("profile-1").exists());
     assert!(case.store.join("profile-3/api.json").exists());
     assert_eq!(
         fs::read(case.codex_home.join("config.toml")).unwrap(),
@@ -656,6 +656,8 @@ fn remove_allows_inactive_oauth_in_api_mode_and_preserves_switch_back() {
         read_config(&case),
         toml_edit::de::from_str::<Value>(PERSONAL_CONFIG).unwrap()
     );
+    assert_success(&case.run(&["remove", "personal", "--yes"]));
+    assert!(!case.store.join("profile-1").exists());
 }
 
 #[test]
@@ -1559,7 +1561,7 @@ fn custom_provider_switch_round_trip_preserves_general_settings_and_rotated_oaut
     );
     assert_eq!(
         read_config(&case)["model_providers"]["unicodex"]["requires_openai_auth"],
-        false
+        true
     );
     let output = case.run(&["list"]);
     assert_success(&output);
@@ -2130,7 +2132,7 @@ fn legacy_api_connection_state_ignores_old_relay_snapshot_when_selecting_oauth()
 }
 
 #[test]
-fn builtin_openai_switch_keeps_default_provider_and_restores_login() {
+fn builtin_openai_rejects_oauth_replacement_but_supports_api_only_switching() {
     let case = Case::new();
     case.seed("personal@example.com", "personal", "personal");
     fs::write(
@@ -2139,8 +2141,18 @@ fn builtin_openai_switch_keeps_default_provider_and_restores_login() {
     )
     .unwrap();
     let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
-    let (base_url, server) = api_server(&[("200 OK", MODEL_LIST)]);
+    let (base_url, server) = api_server(&[("200 OK", MODEL_LIST), ("200 OK", MODEL_LIST)]);
     assert_success(&case.add_api("company", &base_url, "company-key"));
+    let output = case.run(&["use", "company"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("cannot preserve the current ChatGPT login")
+    );
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    assert!(read_config(&case).get("openai_base_url").is_none());
+    assert!(!case.store.join("connection.json").exists());
+    fs::remove_file(case.codex_home.join("auth.json")).unwrap();
     assert_success(&case.run(&["use", "company"]));
     server.join().unwrap();
     assert!(read_config(&case).get("model_provider").is_none());
@@ -2162,6 +2174,116 @@ fn builtin_openai_switch_keeps_default_provider_and_restores_login() {
     assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
     assert!(read_config(&case).get("openai_base_url").is_none());
     assert!(read_config(&case).get("model_provider").is_none());
+}
+
+#[test]
+fn custom_api_only_switch_keeps_openai_auth_disabled() {
+    for auth in [None, Some(r#"{"OPENAI_API_KEY":"old-api-key"}"#)] {
+        let case = Case::new();
+        fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+        if let Some(auth) = auth {
+            fs::write(case.codex_home.join("auth.json"), auth).unwrap();
+        }
+        let (base_url, server) = api_server(&[("200 OK", MODEL_LIST)]);
+        assert_success(&case.add_api("company", &base_url, "company-key"));
+        assert_success(&case.run(&["use", "company"]));
+        server.join().unwrap();
+        assert_eq!(
+            read_config(&case)["model_providers"]["unicodex"]["requires_openai_auth"],
+            false
+        );
+        assert_eq!(
+            fs::read_to_string(case.codex_home.join("auth.json"))
+                .ok()
+                .as_deref(),
+            auth
+        );
+        let status = case.run(&["status"]);
+        assert_success(&status);
+        let stdout = String::from_utf8_lossy(&status.stdout);
+        assert!(stdout.contains("Inference  company"));
+        assert!(stdout.contains("ChatGPT login  none (API-only)"));
+    }
+}
+
+#[test]
+fn custom_api_switch_preserves_the_selected_chatgpt_identity() {
+    let case = Case::new();
+    case.seed("one@example.com", "user-one", "account-one");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    let second = case.home.join("second.json");
+    write_auth(&second, "two@example.com", "user-two", "account-two", "two");
+    assert_success(&case.run(&["import", second.to_str().unwrap()]));
+    assert_success(&case.run(&["use", "two"]));
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+    let (base_url, server) = api_server(&[("200 OK", MODEL_LIST), ("200 OK", MODEL_LIST)]);
+    assert_success(&case.add_api("company", &base_url, "company-key"));
+    assert_success(&case.add_api("other", &base_url, "other-key"));
+    for name in ["company", "other"] {
+        assert_success(&case.run(&["use", name]));
+        assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+        assert_eq!(
+            read_config(&case)["model_providers"]["unicodex"]["requires_openai_auth"],
+            true
+        );
+        let status = case.run(&["status"]);
+        assert_success(&status);
+        let stdout = String::from_utf8_lossy(&status.stdout);
+        assert!(stdout.contains(&format!("Inference  {name}")));
+        assert!(stdout.contains("ChatGPT login  two"));
+    }
+    server.join().unwrap();
+}
+
+#[test]
+fn api_switch_rejects_invalid_chatgpt_credentials_without_downgrading() {
+    for auth in [
+        "partial",
+        "{}",
+        r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":"key"}"#,
+        r#"{"tokens":{},"OPENAI_API_KEY":"key"}"#,
+    ] {
+        let case = Case::new();
+        fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+        fs::write(case.codex_home.join("auth.json"), auth).unwrap();
+        let (base_url, server) = api_server(&[("200 OK", MODEL_LIST)]);
+        assert_success(&case.add_api("company", &base_url, "company-key"));
+        let output = case.run(&["use", "company"]);
+        assert!(!output.status.success());
+        server.join().unwrap();
+        assert_eq!(
+            fs::read_to_string(case.codex_home.join("auth.json")).unwrap(),
+            auth
+        );
+        assert_eq!(
+            fs::read_to_string(case.codex_home.join("config.toml")).unwrap(),
+            PERSONAL_CONFIG
+        );
+        assert!(!case.store.join("connection.json").exists());
+    }
+}
+
+#[test]
+fn api_switch_does_not_disable_a_missing_retained_login() {
+    let case = Case::new();
+    case.seed("personal@example.com", "personal", "personal");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    let (base_url, server) = api_server(&[("200 OK", MODEL_LIST), ("200 OK", MODEL_LIST)]);
+    assert_success(&case.add_api("company", &base_url, "company-key"));
+    assert_success(&case.run(&["use", "company"]));
+    let config = fs::read(case.codex_home.join("config.toml")).unwrap();
+    let state = fs::read(case.store.join("connection.json")).unwrap();
+    fs::remove_file(case.codex_home.join("auth.json")).unwrap();
+    let output = case.run(&["use", "company"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("retained ChatGPT login is missing"));
+    server.join().unwrap();
+    assert_eq!(
+        fs::read(case.codex_home.join("config.toml")).unwrap(),
+        config
+    );
+    assert_eq!(fs::read(case.store.join("connection.json")).unwrap(), state);
+    assert!(!case.codex_home.join("auth.json").exists());
 }
 
 #[test]
@@ -2242,6 +2364,7 @@ fn api_server(responses: &[(&str, &str)]) -> (String, thread::JoinHandle<Vec<Str
                     Err(error) => panic!("API client did not connect: {error}"),
                 }
             };
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
