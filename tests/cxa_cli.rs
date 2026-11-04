@@ -1611,7 +1611,7 @@ fn interactive_generic_enrollment_prompts_in_order_and_saves_website() {
     enrollment.send(b"dummy-visible-key\n");
     enrollment.wait_for_output(b"Service website (optional, Enter to skip):");
     enrollment.send(b"https://gateway.example.com/dashboard?tab=usage\n");
-    enrollment.wait_for_output(b"Service type [generic/cpa, Enter=generic]:");
+    enrollment.wait_for_output(b"Service type [1/2, Enter=1]:");
     enrollment.send(b"\n");
     enrollment.wait_for_output(b"Account name [gateway.example.com]:");
     enrollment.send(b"\n");
@@ -1651,7 +1651,7 @@ fn interactive_generic_enrollment_prompts_in_order_and_saves_website() {
 
 #[test]
 fn guided_chatgpt_enrollment_selects_login_method_without_changing_live_credentials() {
-    for method in ["browser", "device"] {
+    for method in ["1", "2"] {
         let case = Case::new();
         case.seed("one@example.com", "user-one", "account-one");
         fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
@@ -1673,18 +1673,14 @@ fn guided_chatgpt_enrollment_selects_login_method_without_changing_live_credenti
         let mut enrollment = PtyChild::spawn(command);
         enrollment.wait_for_output(b"Account type [1/2]:");
         enrollment.send(b"1\n");
-        enrollment.wait_for_output(b"Login method [browser/device, Enter=browser]:");
+        enrollment.wait_for_output(b"Login method [1/2, Enter=1]:");
         enrollment.send(format!("{method}\n").as_bytes());
         enrollment.wait_for_output(b"Account name [two]:");
-        enrollment.send(if method == "browser" {
-            b"work\n"
-        } else {
-            b"\n"
-        });
+        enrollment.send(if method == "1" { b"work\n" } else { b"\n" });
         enrollment.wait_success();
         assert_eq!(
             fs::read_to_string(case.store.join("profile-2/name")).unwrap(),
-            if method == "browser" { "work" } else { "two" }
+            if method == "1" { "work" } else { "two" }
         );
         assert_eq!(
             access_token(&case.store.join("profile-2/auth.json")),
@@ -1703,7 +1699,7 @@ fn guided_chatgpt_enrollment_selects_login_method_without_changing_live_credenti
                 .unwrap()
                 .lines()
                 .any(|arg| arg == "--device-auth"),
-            method == "device"
+            method == "2"
         );
     }
 }
@@ -1834,6 +1830,46 @@ fn legacy_api_profiles_without_type_still_query_cpa_quota() {
 }
 
 #[test]
+fn service_type_menu_accepts_numbers_and_rejects_invalid_choices_without_saving() {
+    for (choice, expected) in [("1", Some("generic")), ("2", Some("cpa")), ("3", None)] {
+        let case = Case::new();
+        let mut command = case.command();
+        command.args([
+            "add",
+            "--type",
+            "api",
+            "--base-url",
+            "https://gateway.example.com/v1",
+            "--website",
+            "https://gateway.example.com",
+            "--name",
+            "gateway",
+        ]);
+        let mut enrollment = PtyChild::spawn(command);
+        enrollment.wait_for_output(b"API key:");
+        enrollment.send(b"dummy-key\n");
+        enrollment.wait_for_output(b"Service type [1/2, Enter=1]:");
+        let menu = String::from_utf8_lossy(&enrollment.output);
+        assert!(menu.contains("1  Generic gateway (default, no quota query)"));
+        assert!(menu.contains("2  CPA service (subscription quota query)"));
+        enrollment.send(format!("{choice}\n").as_bytes());
+        if let Some(expected) = expected {
+            enrollment.wait_success();
+            let api: Value =
+                serde_json::from_slice(&fs::read(case.store.join("profile-1/api.json")).unwrap())
+                    .unwrap();
+            assert_eq!(api["api_type"], expected);
+        } else {
+            enrollment.wait_for_output(b"Service type must be 1 (generic) or 2 (cpa)");
+            assert!(!enrollment.child.wait().unwrap().success());
+            assert!(!case.store.join("profile-1").exists());
+        }
+        assert!(!case.codex_home.join("auth.json").exists());
+        assert!(!case.codex_home.join("config.toml").exists());
+    }
+}
+
+#[test]
 fn guided_enrollment_can_select_cpa_and_skip_the_website() {
     let case = Case::new();
     let (base_url, server) = api_server(&[("200 OK", r#"{"subscription":{"unlimited":true}}"#)]);
@@ -1846,8 +1882,8 @@ fn guided_enrollment_can_select_cpa_and_skip_the_website() {
     enrollment.send(b"dummy-cpa-key\n");
     enrollment.wait_for_output(b"Service website (optional, Enter to skip):");
     enrollment.send(b"\n");
-    enrollment.wait_for_output(b"Service type [generic/cpa, Enter=generic]:");
-    enrollment.send(b"cpa\n");
+    enrollment.wait_for_output(b"Service type [1/2, Enter=1]:");
+    enrollment.send(b"2\n");
     enrollment.wait_for_output(b"Account name [127.0.0.1]:");
     enrollment.send(b"company\n");
     enrollment.wait_success();
@@ -2054,7 +2090,7 @@ fn name_option_can_precede_interactive_account_type_selection() {
     let mut enrollment = PtyChild::spawn(command);
     enrollment.wait_for_output(b"Account type [1/2]:");
     enrollment.send(b"1\n");
-    enrollment.wait_for_output(b"Login method [browser/device, Enter=browser]:");
+    enrollment.wait_for_output(b"Login method [1/2, Enter=1]:");
     enrollment.send(b"\n");
     enrollment.wait_success();
     assert!(!String::from_utf8_lossy(&enrollment.output).contains("Account name ["));

@@ -42,7 +42,7 @@ Add a ChatGPT subscription or API connection:
 cxa add
 ```
 
-ChatGPT login runs in an isolated home. The API wizard asks for the base URL, API key, optional website, service type, and optional name. Choose `generic` for a gateway without quota queries, or `cpa` for a CPA service with its subscription endpoint. Adding an account saves it without switching.
+ChatGPT login runs in an isolated home. The API wizard asks for the base URL, API key, optional website, service type, and optional name. Interactive menus use `1`/`2`: for service type, choose `1` (or Enter) for a generic gateway without quota queries, or `2` for a CPA service with its subscription endpoint. For ChatGPT login, choose `1` (or Enter) for browser login, or `2` for a device code. Adding an account saves it without switching.
 
 List accounts and quota:
 

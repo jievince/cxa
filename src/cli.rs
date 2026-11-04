@@ -202,12 +202,13 @@ pub fn run(cli: Cli, config: Config) -> Result<()> {
                     println!(
                         "ChatGPT login runs in an isolated Codex home; your current login is not changed."
                     );
-                    match prompt_line("Login method [browser/device, Enter=browser]: ")?.as_str() {
-                        "" | "browser" => false,
-                        "device" => true,
+                    println!("Login method:\n  1  Browser (default)\n  2  Device code");
+                    match prompt_line("Login method [1/2, Enter=1]: ")?.as_str() {
+                        "" | "1" => false,
+                        "2" => true,
                         _ => {
                             return Err(Error::Message(
-                                "Login method must be browser or device; no account was saved."
+                                "Login method must be 1 (browser) or 2 (device); no account was saved."
                                     .into(),
                             ));
                         }
@@ -764,12 +765,16 @@ impl App {
         let api_type = match api_type {
             Some(api_type) => api_type,
             None if interactive => {
-                match prompt_line("Service type [generic/cpa, Enter=generic]: ")?.as_str() {
-                    "" | "generic" => ApiType::Generic,
-                    "cpa" => ApiType::Cpa,
+                println!(
+                    "Service type:\n  1  Generic gateway (default, no quota query)\n  2  CPA service (subscription quota query)"
+                );
+                match prompt_line("Service type [1/2, Enter=1]: ")?.as_str() {
+                    "" | "1" => ApiType::Generic,
+                    "2" => ApiType::Cpa,
                     _ => {
                         return Err(Error::Message(
-                            "Service type must be generic or cpa; no account was saved.".into(),
+                            "Service type must be 1 (generic) or 2 (cpa); no account was saved."
+                                .into(),
                         ));
                     }
                 }
