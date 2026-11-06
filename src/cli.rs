@@ -51,7 +51,7 @@ enum CliCommand {
         yes: bool,
     },
     /// List enrolled accounts and their remaining quota.
-    /// Display positions start at 1; account commands accept names only.
+    /// Display positions start at 1 and can be used with `cxa use`.
     List {
         /// Keep the live list open and refresh it periodically.
         #[arg(short, long)]
@@ -77,7 +77,7 @@ enum CliCommand {
     },
     /// Show the selected account and credential-file state.
     Status,
-    /// Switch by the account's exact name (case-insensitive).
+    /// Switch by exact name (case-insensitive) or current list position.
     Use { account: String },
     /// Change an account's unique name without changing its credentials.
     Rename { account: String, name: String },
@@ -572,7 +572,24 @@ impl App {
 
     fn switch(&self, selector: &str) -> Result<()> {
         let _lock = self.locked()?;
-        let target = self.store.resolve(selector)?;
+        let name = if !selector.is_empty() && selector.bytes().all(|byte| byte.is_ascii_digit()) {
+            // Use the same ordering as list, under the store lock; never treat a position as a slot.
+            let profiles = self.store.profiles()?;
+            selector
+                .parse::<usize>()
+                .ok()
+                .and_then(|position| position.checked_sub(1))
+                .and_then(|index| profiles.get(index))
+                .map(|profile| profile.name.clone())
+                .ok_or_else(|| {
+                    Error::Message(format!(
+                        "No account at list position `{selector}`. Run `cxa list` to see current positions; nothing was switched."
+                    ))
+                })?
+        } else {
+            selector.to_owned()
+        };
+        let target = self.store.resolve(&name)?;
         let gateway_models = if let Account::Api(account) = &target.account {
             let models = api_models::query(account).map_err(|error| {
                 Error::Message(format!("{error} No account or connection was switched."))
@@ -1058,7 +1075,7 @@ fn profile_header(
     } else {
         None
     };
-    // Ordinals are presentation positions, never stored account identities or selectors.
+    // Ordinals are current list positions, never stored account identities.
     let style = if selected { SUCCESS } else { EMPHASIS };
     let marker = if selected { "*" } else { " " };
     write!(output, "{style}{marker} ").unwrap();

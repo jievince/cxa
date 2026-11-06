@@ -2549,7 +2549,83 @@ fn renamed_api_uses_current_name_without_changing_live_config_during_rename() {
 }
 
 #[test]
-fn names_replace_numeric_and_partial_selectors_without_changing_live_state() {
+fn numeric_switch_positions_resolve_to_names_and_reindex_after_removal() {
+    let case = Case::new();
+    case.seed("first@example.com", "first", "first");
+    fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
+    let second = case.home.join("second.json");
+    write_auth(
+        &second,
+        "second@example.com",
+        "second",
+        "second",
+        "second-token",
+    );
+    assert_success(&case.run(&["import", second.to_str().unwrap()]));
+    let (base_url, server) = api_server(&[
+        ("200 OK", MODEL_LIST),
+        ("200 OK", MODEL_LIST),
+        ("200 OK", MODEL_LIST),
+    ]);
+    assert_success(&case.add_api("company", &base_url, "dummy-company-key"));
+    assert_success(&case.run(&["use", "3"]));
+    assert_eq!(
+        read_config(&case)["model_providers"]["unicodex"]["name"],
+        "company"
+    );
+    let output = case.run(&["use", "2"]);
+    assert_success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Account second"));
+    assert_success(&case.run(&["remove", "first", "--yes"]));
+    let list = case.run(&["list"]);
+    assert_success(&list);
+    let text = String::from_utf8_lossy(&list.stdout);
+    assert!(text.contains("* 1. second"), "{text}");
+    assert!(text.contains("  2. company"), "{text}");
+
+    assert_success(&case.run(&["use", "2"]));
+    assert_eq!(
+        read_config(&case)["model_providers"]["unicodex"]["name"],
+        "company"
+    );
+    assert_success(&case.run(&["rename", "company", "work"]));
+    let output = case.run(&["use", "2"]);
+    assert_success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Account work"));
+    server.join().unwrap();
+    assert_eq!(
+        read_config(&case)["model_providers"]["unicodex"]["name"],
+        "work"
+    );
+    assert_eq!(read_config(&case)["model_provider"], "unicodex");
+    assert_eq!(
+        fs::read_to_string(case.store.join("profile-3/name")).unwrap(),
+        "work"
+    );
+    assert_success(&case.run(&["use", "1"]));
+    assert_eq!(
+        fs::read(case.codex_home.join("auth.json")).unwrap(),
+        fs::read(&second).unwrap()
+    );
+
+    let config = fs::read(case.codex_home.join("config.toml")).unwrap();
+    let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
+    let state = fs::read(case.store.join("connection.json")).unwrap();
+    for position in ["0", "3", "999999999999999999999999999999999999"] {
+        let output = case.run(&["use", position]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("No account at list position"));
+    }
+    assert_eq!(
+        fs::read(case.codex_home.join("config.toml")).unwrap(),
+        config
+    );
+    assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
+    assert_eq!(fs::read(case.store.join("connection.json")).unwrap(), state);
+}
+
+#[test]
+fn non_switch_commands_require_names_and_partial_selectors_never_match() {
     let case = Case::new();
     case.seed("jaxonblazers@example.com", "personal", "personal");
     fs::write(case.codex_home.join("config.toml"), PERSONAL_CONFIG).unwrap();
@@ -2561,8 +2637,6 @@ fn names_replace_numeric_and_partial_selectors_without_changing_live_state() {
     assert_success(&case.run(&["rename", "jaxonblazers", "jax"]));
     assert_success(&case.run(&["rename", "company", "work"]));
     for args in [
-        vec!["use", "1"],
-        vec!["use", "2"],
         vec!["remove", "2", "--yes"],
         vec!["models", "2"],
         vec!["relogin", "1"],
@@ -2645,7 +2719,7 @@ fn legacy_name_migration_persists_collisions_across_removal_and_enrollment() {
 }
 
 #[test]
-fn list_numbers_are_contiguous_after_removal_and_never_select_accounts() {
+fn list_numbers_are_contiguous_after_removal_and_align_across_digit_widths() {
     let case = Case::new();
     case.seed("first@example.com", "first", "first");
     let second = case.home.join("second.json");
@@ -2679,12 +2753,7 @@ fn list_numbers_are_contiguous_after_removal_and_never_select_accounts() {
     );
     assert!(case.store.join("profile-2/auth.json").exists());
     assert!(case.store.join("profile-3/api.json").exists());
-    for arguments in [
-        vec!["use", "1"],
-        vec!["use", "2"],
-        vec!["remove", "1", "--yes"],
-        vec!["rename", "2", "work"],
-    ] {
+    for arguments in [vec!["remove", "1", "--yes"], vec!["rename", "2", "work"]] {
         assert!(!case.run(&arguments).status.success());
     }
     assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);

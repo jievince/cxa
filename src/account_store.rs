@@ -426,7 +426,7 @@ impl Store {
     pub fn resolve(&self, selector: &str) -> Result<Profile> {
         self.profiles()?.into_iter()
             .find(|profile| profile.name.eq_ignore_ascii_case(selector))
-            .ok_or_else(|| Error::Message(format!("No account named `{selector}`. Use `cxa list` to see names; numeric IDs and partial matches are not supported.")))
+            .ok_or_else(|| Error::Message(format!("No account named `{selector}`. Use `cxa list` to see exact names; only `cxa use` accepts list positions.")))
     }
 
     pub fn slot_for_identity(&self, identity: &Identity) -> Result<Option<u32>> {

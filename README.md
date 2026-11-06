@@ -65,14 +65,14 @@ Both account types accept `--name`. Otherwise, the default is the email local pa
 | `cxa status` | Selected account and credential state; also the default for `cxa` |
 | `cxa list` | All accounts; `*` marks the selected one |
 | `cxa watch` | Live quota view; `q` or Ctrl-C exits |
-| `cxa use NAME` | Switch using an exact account name |
+| `cxa use NAME` / `cxa use N` | Switch by name or current list position |
 | `cxa rename OLD NEW` | Rename without changing live credentials or config |
 | `cxa remove NAME` | Remove a saved account; active accounts are protected |
 | `cxa models [NAME]` | Query an API gateway's `/models` |
 | `cxa relogin NAME` | Renew a ChatGPT login |
 | `cxa import PATH` | Import a ChatGPT `auth.json` |
 
-List numbers are display positions, starting at 1; commands accept names only. There is no `cxa NAME` shorthand. Run `cxa COMMAND --help` for options.
+Names remain the unique account identifiers. `cxa use N` resolves a number to the account at that position in the current list, starting at 1. Positions are renumbered after removal; rerun `cxa list` if accounts changed. Other commands accept names only. There is no `cxa NAME` shorthand. Run `cxa COMMAND --help` for options.
 
 ## Configuration boundary
 

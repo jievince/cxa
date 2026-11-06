@@ -65,14 +65,14 @@ cxa use company
 | `cxa status` | 当前账号与凭据状态；直接运行 `cxa` 也显示此信息 |
 | `cxa list` | 全部账号；`*` 表示当前选中项 |
 | `cxa watch` | 持续刷新额度；按 `q` 或 Ctrl-C 退出 |
-| `cxa use NAME` | 用完整名称切换账号 |
+| `cxa use NAME` / `cxa use N` | 用名称或当前列表序号切换 |
 | `cxa rename OLD NEW` | 改名，不修改当前凭据或配置 |
 | `cxa remove NAME` | 删除本地保存的账号；当前账号受保护 |
 | `cxa models [NAME]` | 查询 API 服务的 `/models` |
 | `cxa relogin NAME` | 重新登录 ChatGPT 账号 |
 | `cxa import PATH` | 导入 ChatGPT 的 `auth.json` |
 
-列表数字仅为从 1 开始的展示序号，不能用于操作。不支持 `cxa NAME` 简写。完整选项见 `cxa COMMAND --help`。
+name 仍是唯一账号标识。`cxa use N` 将数字解析为当前列表中第 N 个账号，从 1 开始。删除后序号重排；列表发生变化时请重新运行 `cxa list`。其他命令仍只接受名称。不支持 `cxa NAME` 简写。完整选项见 `cxa COMMAND --help`。
 
 ## 配置边界
 

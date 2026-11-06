@@ -26,7 +26,7 @@ cxa add --type api --name gateway --base-url https://gateway.example/v1 --websit
 
 Adding saves credentials without validating an API key or changing the active connection. `cxa use NAME` queries `/models` and rejects an unavailable user-level default model before switching. It does not replace the model or inspect every project's settings or an existing chat's model selection.
 
-Names are exact, case-insensitive selectors. ChatGPT defaults to the email local part; APIs default to the hostname. Generated collisions receive `-2`, `-3`, etc.; explicit duplicates fail. Renaming only updates the saved name, with an API provider's display name updated on its next selection. Internal `profile-N` directories are storage details, not selectors.
+Names are the unique identifiers and match exactly, ignoring case. Only `cxa use N` also accepts a positive list position: it resolves the current list entry to its name, not an internal profile slot. Positions start at 1 and change when accounts are removed; list again after any enrollment or removal. Other commands require names. ChatGPT defaults to the email local part; APIs default to the hostname. Generated collisions receive `-2`, `-3`, etc.; explicit duplicates fail. Renaming only updates the saved name, with an API provider's display name updated on its next selection. Internal `profile-N` directories are storage details, not selectors.
 
 `cxa remove NAME` asks for confirmation (`--yes` skips it). The selected account and credentials still referenced by Codex are protected. Removal deletes the saved profile and quota cache, not sessions or server-side credentials. API connections do not support `relogin`.
 
