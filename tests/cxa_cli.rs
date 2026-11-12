@@ -448,9 +448,15 @@ fn switch_works_while_codex_is_running_and_prints_restart_guidance() {
         access_token(&case.codex_home.join("auth.json")),
         "token-two"
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains(
-        "Restart Codex or ChatGPT before expecting an existing session to use this account."
-    ));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(concat!(
+        "To use the selected account, follow these steps:\n",
+        "  1. Quit all Codex CLI instances and fully quit Codex Desktop.\n",
+        "  2. Run in your shell: codex app-server daemon restart\n",
+        "  3. Reopen Codex CLI and/or Codex Desktop.\n",
+    )));
+    assert!(!stdout.contains("After a reboot"));
+    assert!(!stdout.contains("codex app-server daemon start"));
 }
 
 #[test]
@@ -793,7 +799,10 @@ fn selected_relogin_updates_the_session_and_prints_restart_guidance() {
         access_token(&case.codex_home.join("auth.json")),
         "replacement"
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Restart Codex or ChatGPT"));
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("To use the selected account, follow these steps:")
+    );
 }
 
 #[test]
@@ -852,7 +861,10 @@ done
 
     assert_success(&output);
     assert!(String::from_utf8_lossy(&output.stdout).contains("quota unavailable (Protocol)"));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Restart Codex or ChatGPT"));
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("To use the selected account, follow these steps:")
+    );
     assert_eq!(
         access_token(&case.store.join("profile-1/auth.json")),
         "refreshed-one"

@@ -1171,15 +1171,12 @@ fn print_enrollment(profile: &Profile) {
 }
 
 fn restart_notice() {
+    println!("{WARNING}!{WARNING:#} To use the selected account, follow these steps:");
+    println!("{MUTED}  1. Quit all Codex CLI instances and fully quit Codex Desktop.{MUTED:#}");
     println!(
-        "{WARNING}!{WARNING:#} Restart Codex or ChatGPT before expecting an existing session to use this account."
+        "{MUTED}  2. Run in your shell:{MUTED:#} {ACCENT}codex app-server daemon restart{ACCENT:#}"
     );
-    println!(
-        "{MUTED}  Codex CLI:{MUTED:#} {ACCENT}codex app-server daemon restart{ACCENT:#}{MUTED}  ·  quit Codex Desktop first, reopen it after{MUTED:#}"
-    );
-    println!(
-        "{MUTED}  After a reboot:{MUTED:#} {ACCENT}codex app-server daemon start{ACCENT:#}{MUTED} before opening Codex Desktop{MUTED:#}"
-    );
+    println!("{MUTED}  3. Reopen Codex CLI and/or Codex Desktop.{MUTED:#}");
 }
 
 fn write_usage_result(
