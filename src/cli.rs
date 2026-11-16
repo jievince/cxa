@@ -389,6 +389,7 @@ impl App {
             });
         }
         let selected = self.store.selected()?;
+        let active = self.active_configuration(selected)?;
         let mut states: Vec<ProfileUsage> = profiles
             .iter()
             .map(|profile| {
@@ -409,7 +410,7 @@ impl App {
             .collect();
         let mut frame = 0;
         if region.is_active() && !refresh_slots.is_empty() {
-            let output = profile_list(&profiles, selected, &states, now_epoch(), frame);
+            let output = profile_list(&profiles, selected, &states, now_epoch(), frame, &active);
             region
                 .redraw(&output)
                 .map_err(|error| Error::io("stdout", error))?;
@@ -461,7 +462,8 @@ impl App {
             }
             if region.is_active() {
                 frame += 1;
-                let output = profile_list(&profiles, selected, &states, now_epoch(), frame);
+                let output =
+                    profile_list(&profiles, selected, &states, now_epoch(), frame, &active);
                 region
                     .redraw(&output)
                     .map_err(|error| Error::io("stdout", error))?;
@@ -481,7 +483,7 @@ impl App {
         if exit_requested {
             return Ok(ListRefresh::ExitRequested);
         }
-        let output = profile_list(&profiles, selected, &states, now_epoch(), frame);
+        let output = profile_list(&profiles, selected, &states, now_epoch(), frame, &active);
         if region.is_active() {
             region
                 .redraw(&output)
@@ -493,6 +495,25 @@ impl App {
             return Err(error);
         }
         Ok(ListRefresh::Completed { session_changed })
+    }
+
+    fn active_configuration(&self, selected: Option<u32>) -> Result<String> {
+        let provider = selected
+            .map(|slot| self.store.profile(slot).map(|profile| profile.name))
+            .transpose()?
+            .unwrap_or_else(|| "none".into());
+        let auth = match connection::current_chatgpt(&self.store.config)? {
+            Some(auth) => self
+                .store
+                .slot_for_identity(&auth.identity)?
+                .map(|slot| self.store.profile(slot).map(|profile| profile.name))
+                .transpose()?
+                .unwrap_or_else(|| "not enrolled in cxa".into()),
+            None => "none (API-only)".into(),
+        };
+        Ok(format!(
+            "{ACCENT}Active provider:{ACCENT:#} {provider}\n{ACCENT}Active ChatGPT auth:{ACCENT:#} {auth}\n"
+        ))
     }
 
     fn status(&self, refresh: bool) -> Result<()> {
@@ -528,19 +549,7 @@ impl App {
             WARNING
         };
         println!("  {ACCENT}Credential{ACCENT:#}  {style}{credential}{style:#}");
-        if matches!(profile.account, Account::Api(_)) {
-            println!("  {ACCENT}Inference{ACCENT:#}  {}", profile.name);
-            let login = match connection::current_chatgpt(&self.store.config)? {
-                Some(auth) => self
-                    .store
-                    .slot_for_identity(&auth.identity)?
-                    .map(|slot| self.store.profile(slot).map(|profile| profile.name))
-                    .transpose()?
-                    .unwrap_or_else(|| auth.identity.label().to_owned()),
-                None => "none (API-only)".into(),
-            };
-            println!("  {ACCENT}ChatGPT login{ACCENT:#}  {login}");
-        }
+        print!("{}", self.active_configuration(Some(selected))?);
         if session_changed {
             restart_notice();
         }
@@ -624,6 +633,7 @@ impl App {
             selected.name,
             selected.label()
         );
+        print!("{}", self.active_configuration(Some(selected.slot))?);
         restart_notice();
         if let Some(models) = gateway_models {
             println!("{MUTED}Gateway models:{MUTED:#} {}", models.join(", "));
@@ -976,8 +986,9 @@ fn profile_list(
     states: &[ProfileUsage],
     now: i64,
     frame: usize,
+    active: &str,
 ) -> String {
-    let mut output = String::new();
+    let mut output = format!("{active}\n");
     let width = profiles.len().to_string().len();
     for (index, (profile, state)) in profiles.iter().zip(states).enumerate() {
         let position = ListPosition {

@@ -560,12 +560,31 @@ impl Store {
                 .is_some_and(|session| session.identity.same_account(&auth.identity)),
             Account::Api(_) => false,
         };
-        if self.selected()? == Some(profile.slot) || session_points_inside || is_chatgpt_login {
-            return Err(Error::Message(format!(
-                "Account {} ({}) is selected or still referenced by Codex credentials. Switch to another ChatGPT account before removing it; nothing was removed.",
-                profile.name,
-                profile.label()
-            )));
+        let selected = self.selected()?;
+        let reason = if selected == Some(profile.slot) {
+            Some(format!(
+                "Account {} is the active provider. Switch to another account before removing it",
+                profile.name
+            ))
+        } else if is_chatgpt_login {
+            let provider = selected
+                .map(|slot| self.profile(slot).map(|profile| profile.name))
+                .transpose()?
+                .unwrap_or_else(|| "none".into());
+            Some(format!(
+                "Account {} is the active ChatGPT auth (active provider: {provider}). Switch to another ChatGPT account before removing it",
+                profile.name
+            ))
+        } else if session_points_inside {
+            Some(format!(
+                "Account {} is still referenced by the Codex credentials path. Move the credentials outside this account's directory before removing it",
+                profile.name
+            ))
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Err(Error::Message(format!("{reason}; nothing was removed.")));
         }
         let metadata = fs::symlink_metadata(&dir).map_err(|error| Error::io(&dir, error))?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() {

@@ -644,8 +644,13 @@ fn remove_protects_the_chatgpt_login_while_using_an_api() {
     let auth = fs::read(case.codex_home.join("auth.json")).unwrap();
     let output = case.run(&["remove", "company", "--yes"]);
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("still referenced"));
-    assert!(!case.run(&["remove", "personal", "--yes"]).status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("company is the active provider"));
+    let protected = case.run(&["remove", "personal", "--yes"]);
+    assert!(!protected.status.success());
+    assert!(
+        String::from_utf8_lossy(&protected.stderr)
+            .contains("personal is the active ChatGPT auth (active provider: company)")
+    );
     assert!(case.store.join("profile-1").exists());
     assert!(case.store.join("profile-3/api.json").exists());
     assert_eq!(
@@ -1127,8 +1132,8 @@ esac
     watch.assert_terminal_restored();
     let reserved = watch
         .output
-        .windows(b"\x1b[3A\x1b[s".len())
-        .position(|window| window == b"\x1b[3A\x1b[s")
+        .windows(b"\x1b[6A\x1b[s".len())
+        .position(|window| window == b"\x1b[6A\x1b[s")
         .unwrap_or_else(|| panic!("no reserved origin in {:?}", watch.output));
     let loading = watch
         .output
@@ -2249,8 +2254,14 @@ fn custom_api_only_switch_keeps_openai_auth_disabled() {
         let status = case.run(&["status"]);
         assert_success(&status);
         let stdout = String::from_utf8_lossy(&status.stdout);
-        assert!(stdout.contains("Inference  company"));
-        assert!(stdout.contains("ChatGPT login  none (API-only)"));
+        assert!(stdout.contains("Active provider: company"));
+        assert!(stdout.contains("Active ChatGPT auth: none (API-only)"));
+        let list = case.run(&["list"]);
+        assert_success(&list);
+        assert!(
+            String::from_utf8_lossy(&list.stdout)
+                .starts_with("Active provider: company\nActive ChatGPT auth: none (API-only)\n\n")
+        );
     }
 }
 
@@ -2268,7 +2279,18 @@ fn custom_api_switch_preserves_the_selected_chatgpt_identity() {
     assert_success(&case.add_api("company", &base_url, "company-key"));
     assert_success(&case.add_api("other", &base_url, "other-key"));
     for name in ["company", "other"] {
-        assert_success(&case.run(&["use", name]));
+        let switched = case.run(&["use", name]);
+        assert_success(&switched);
+        let notice = String::from_utf8_lossy(&switched.stdout);
+        assert!(notice.contains(&format!(
+            "Active provider: {name}\nActive ChatGPT auth: two\n"
+        )));
+        let list = case.run(&["list"]);
+        assert_success(&list);
+        let list = String::from_utf8_lossy(&list.stdout);
+        assert!(list.starts_with(&format!(
+            "Active provider: {name}\nActive ChatGPT auth: two\n\n"
+        )));
         assert_eq!(fs::read(case.codex_home.join("auth.json")).unwrap(), auth);
         assert_eq!(
             read_config(&case)["model_providers"]["unicodex"]["requires_openai_auth"],
@@ -2277,8 +2299,8 @@ fn custom_api_switch_preserves_the_selected_chatgpt_identity() {
         let status = case.run(&["status"]);
         assert_success(&status);
         let stdout = String::from_utf8_lossy(&status.stdout);
-        assert!(stdout.contains(&format!("Inference  {name}")));
-        assert!(stdout.contains("ChatGPT login  two"));
+        assert!(stdout.contains(&format!("Active provider: {name}")));
+        assert!(stdout.contains("Active ChatGPT auth: two"));
     }
     server.join().unwrap();
 }
@@ -2750,6 +2772,7 @@ fn list_numbers_are_contiguous_after_removal_and_align_across_digit_widths() {
     let output = case.run(&["list"]);
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("Active provider: second\nActive ChatGPT auth: second\n\n"));
     let headings: Vec<_> = stdout
         .lines()
         .filter(|line| {
@@ -2784,7 +2807,7 @@ fn list_numbers_are_contiguous_after_removal_and_align_across_digit_widths() {
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.starts_with("*  1. second · ChatGPT\n      second@example.com\n      Usage unknown")
+        stdout.starts_with("Active provider: second\nActive ChatGPT auth: second\n\n*  1. second · ChatGPT\n      second@example.com\n      Usage unknown")
     );
     assert!(stdout.contains(
         "  12. relay-10 · CPA API key\n      https://relay.example.com/v1\n      Usage unknown"
